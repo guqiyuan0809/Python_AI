@@ -1,0 +1,41 @@
+FastAPI 入门指南
+
+FastAPI 是一个现代、高性能的 Python Web 框架，用于构建 API。它基于 Python 类型提示，能自动生成交互式 API 文档。
+
+FastAPI 的核心特点：
+1. 高性能：基于 Starlette 和 Pydantic，性能接近 Node.js 和 Go
+2. 快速开发：自动补全和类型检查减少了大约 40% 的开发错误
+3. 自动文档：自动生成 Swagger UI 和 ReDoc 文档
+4. 类型安全：基于 Python 类型提示，请求参数自动验证
+5. 异步支持：原生支持 async/await，适合 IO 密集型应用
+
+FastAPI 基础用法：
+
+创建一个最简单的 API：
+```python
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/")
+async def root():
+    return {"message": "Hello World"}
+
+@app.get("/items/{item_id}")
+async def read_item(item_id: int, q: str = None):
+    return {"item_id": item_id, "q": q}
+```
+
+启动命令：uvicorn main:app --reload
+
+FastAPI 与 Django 的区别：
+- FastAPI 专注于 API 开发，Django 是全功能框架
+- FastAPI 性能更高，Django 功能更全
+- FastAPI 适合微服务和 AI 应用后端，Django 适合传统 Web 应用
+- FastAPI 学习曲线低，Django 学习曲线较高但功能丰富
+
+在 AI 应用开发中，FastAPI 是最常用的后端框架，因为：
+- 原生异步支持，适合处理 AI 模型的长时间推理请求
+- 自动 API 文档，方便前端对接
+- 与 LangChain、LlamaIndex 等 AI 框架集成方便
+- 支持流式响应（SSE），适合大模型的流式输出

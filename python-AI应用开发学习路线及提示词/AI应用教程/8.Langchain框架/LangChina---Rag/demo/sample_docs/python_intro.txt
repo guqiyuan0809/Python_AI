@@ -1,0 +1,27 @@
+Python 编程语言简介
+
+Python 是一门高级编程语言，由 Guido van Rossum 于 1991 年发布。Python 以简洁的语法和强大的功能著称，被广泛应用于 Web 开发、数据分析、人工智能、自动化脚本等领域。
+
+Python 的核心优点包括：
+1. 语法简洁易读：Python 的代码接近自然语言，初学者容易上手
+2. 生态丰富：拥有超过 40 万个第三方库，覆盖各种应用场景
+3. 社区活跃：全球有数百万开发者，遇到问题容易找到解决方案
+4. 跨平台：在 Windows、Linux、macOS 上都能运行
+5. 胶水语言：能与 C、C++、Java 等语言无缝集成
+
+Python 在 Web 开发方面有多个优秀的框架：
+- Django：全功能 Web 框架，适合大型项目，内置 ORM、认证、Admin 后台
+- Flask：轻量级框架，灵活自由，适合小型项目和 API 开发
+- FastAPI：现代高性能框架，支持异步操作，自动生成 API 文档
+
+Python 在数据科学和人工智能领域也占据重要地位：
+- NumPy 和 Pandas 用于数据处理和分析
+- Matplotlib 和 Seaborn 用于数据可视化
+- Scikit-learn 用于传统机器学习
+- TensorFlow 和 PyTorch 用于深度学习
+- LangChain 用于 LLM 应用开发
+
+Python 的版本历史：
+- Python 2：2000 年发布，已于 2020 年停止维护
+- Python 3：2008 年发布，是当前主流版本
+- 建议所有新项目使用 Python 3.8 及以上版本
