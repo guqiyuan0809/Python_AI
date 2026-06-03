@@ -4,14 +4,11 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="5108f4fb-6914-4289-8411-3469ec54b2e8" name="更改" comment="">
-      <change afterPath="$PROJECT_DIR$/.idea/Pythoncode.iml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/modules.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/ljh1.py" afterDir="false" />
+    <list default="true" id="5108f4fb-6914-4289-8411-3469ec54b2e8" name="更改" comment="111">
+      <change afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day01.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day01.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/python-AI应用开发学习路线及提示词/学习进度.md" beforeDir="false" afterPath="$PROJECT_DIR$/python-AI应用开发学习路线及提示词/学习进度.md" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -19,7 +16,7 @@
     <option name="LAST_RESOLUTION" value="IGNORE" />
   </component>
   <component name="EmbeddingIndexingInfo">
-    <option name="cachedIndexableFilesCount" value="105" />
+    <option name="cachedIndexableFilesCount" value="106" />
   </component>
   <component name="FileTemplateManagerImpl">
     <option name="RECENT_TEMPLATES">
@@ -37,61 +34,61 @@
   </component>
   <component name="NextEditCompletionFeaturesState">
     <decayedCancelled>
-      <entry key="MS100" value="1.0" />
-      <entry key="MS500" value="1.0000874673624287" />
-      <entry key="S2" value="1.1629086949292353" />
-      <entry key="S5" value="1.9023427014926257" />
-      <entry key="S10" value="2.635370470416756" />
-      <entry key="S30" value="3.448187027260222" />
-      <entry key="S60" value="3.7712021836665004" />
-      <entry key="M2" value="4.4091119173612086" />
-      <entry key="M5" value="6.537033111873681" />
-      <entry key="M10" value="11.776142982512003" />
-      <entry key="M15" value="18.36361037211465" />
-      <entry key="M30" value="37.660520322615575" />
-      <entry key="H1" value="64.39217912399076" />
-      <entry key="H2" value="105.38238991191288" />
-      <entry key="H4" value="178.7088006126034" />
-      <entry key="D1" value="368.83953217773944" />
-      <entry key="W1" value="429.6037792247687" />
+      <entry key="MS100" value="1.0000000005060503" />
+      <entry key="MS500" value="1.0138305275715553" />
+      <entry key="S2" value="1.3429401081812309" />
+      <entry key="S5" value="1.6603188494531569" />
+      <entry key="S10" value="1.9018320521098233" />
+      <entry key="S30" value="2.8649810002874743" />
+      <entry key="S60" value="4.947305843278975" />
+      <entry key="M2" value="8.224137681331715" />
+      <entry key="M5" value="13.281844321273466" />
+      <entry key="M10" value="19.58738112095143" />
+      <entry key="M15" value="26.415965427082433" />
+      <entry key="M30" value="45.99486682419954" />
+      <entry key="H1" value="73.23172068365457" />
+      <entry key="H2" value="114.67002199823945" />
+      <entry key="H4" value="188.28912032532764" />
+      <entry key="D1" value="379.35927968106233" />
+      <entry key="W1" value="440.52403893958456" />
     </decayedCancelled>
     <decayedSelected>
-      <entry key="MS100" value="2.6038032875272784E-47" />
-      <entry key="MS500" value="4.820827971405245E-10" />
-      <entry key="S2" value="0.004685763968909774" />
-      <entry key="S5" value="0.11703403092931156" />
-      <entry key="S10" value="0.34210236952958456" />
-      <entry key="S30" value="0.7013112828838556" />
-      <entry key="S60" value="0.9315744754240426" />
-      <entry key="M2" value="1.606036491625483" />
-      <entry key="M5" value="3.705379721274516" />
-      <entry key="M10" value="7.1542278837920765" />
-      <entry key="M15" value="10.584668055805038" />
-      <entry key="M30" value="19.310679622214906" />
-      <entry key="H1" value="30.458294698085297" />
-      <entry key="H2" value="45.956222367429525" />
-      <entry key="H4" value="71.93951161461763" />
-      <entry key="D1" value="138.612829542032" />
-      <entry key="W1" value="159.98670029285717" />
+      <entry key="MS100" value="0.0" />
+      <entry key="MS500" value="5.658336821707496E-106" />
+      <entry key="S2" value="4.8772183486104825E-27" />
+      <entry key="S5" value="2.987231495769433E-11" />
+      <entry key="S10" value="5.4655571569990235E-6" />
+      <entry key="S30" value="0.017663236287849937" />
+      <entry key="S60" value="0.14784182227972498" />
+      <entry key="M2" value="0.6398015267036856" />
+      <entry key="M5" value="2.5641809280728203" />
+      <entry key="M10" value="5.951421947943226" />
+      <entry key="M15" value="9.362300097541617" />
+      <entry key="M30" value="18.161437320876182" />
+      <entry key="H1" value="29.53805624578522" />
+      <entry key="H2" value="45.25665867261927" />
+      <entry key="H4" value="71.38986609064106" />
+      <entry key="D1" value="138.43575577085744" />
+      <entry key="W1" value="159.95748740156515" />
     </decayedSelected>
     <decayedShown>
-      <entry key="MS100" value="0.01151772826008673" />
-      <entry key="MS500" value="0.4096007459018744" />
-      <entry key="S2" value="0.9441503763350588" />
-      <entry key="S5" value="1.8252538208895637" />
-      <entry key="S10" value="2.806243462749437" />
-      <entry key="S30" value="4.058766248551328" />
-      <entry key="S60" value="4.6496005035259405" />
-      <entry key="M2" value="5.981009917854425" />
-      <entry key="M5" value="10.219628908997201" />
-      <entry key="M10" value="18.90890515750268" />
-      <entry key="M15" value="28.925727680290752" />
-      <entry key="M30" value="56.94798777905002" />
-      <entry key="H1" value="94.83078505585362" />
-      <entry key="H2" value="151.32298913117933" />
-      <entry key="H4" value="250.63553054001542" />
-      <entry key="D1" value="507.448079726618" />
-      <entry key="W1" value="589.5897689427866" />
+      <entry key="MS100" value="0.46651649589145683" />
+      <entry key="MS500" value="0.8689890549508613" />
+      <entry key="S2" value="1.2821243876910995" />
+      <entry key="S5" value="1.6260893023479288" />
+      <entry key="S10" value="1.8777569354812995" />
+      <entry key="S30" value="2.862552648971104" />
+      <entry key="S60" value="5.070695782106712" />
+      <entry key="M2" value="8.837564016905304" />
+      <entry key="M5" value="15.823046496482428" />
+      <entry key="M10" value="25.516860211089327" />
+      <entry key="M15" value="35.75547606403455" />
+      <entry key="M30" value="64.13298908896334" />
+      <entry key="H1" value="102.74992448897753" />
+      <entry key="H2" value="159.91091189992966" />
+      <entry key="H4" value="259.6661096080477" />
+      <entry key="D1" value="517.7907266517375" />
+      <entry key="W1" value="600.480811281412" />
     </decayedShown>
   </component>
   <component name="ProjectColorInfo">{
@@ -110,9 +107,11 @@
   &quot;keyToString&quot;: {
     &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
     &quot;Python.DemoClass.executor&quot;: &quot;Run&quot;,
+    &quot;Python.day01.executor&quot;: &quot;Run&quot;,
     &quot;Python.ljh1.executor&quot;: &quot;Run&quot;,
     &quot;RunOnceActivity.MCP Project settings loaded&quot;: &quot;true&quot;,
     &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
     &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
     &quot;RunOnceActivity.typescript.service.memoryLimit.init&quot;: &quot;true&quot;,
     &quot;codeWithMe.voiceChat.enabledByDefault&quot;: &quot;false&quot;,
@@ -177,15 +176,31 @@
       <workItem from="1780040870138" duration="4948000" />
       <workItem from="1780293840045" duration="1440000" />
       <workItem from="1780319125204" duration="697000" />
-      <workItem from="1780382136542" duration="1207000" />
+      <workItem from="1780382136542" duration="2016000" />
+      <workItem from="1780390393192" duration="9070000" />
+      <workItem from="1780450268480" duration="103000" />
     </task>
+    <task id="LOCAL-00001" summary="111">
+      <option name="closed" value="true" />
+      <created>1780383655505</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1780383655505</updated>
+    </task>
+    <option name="localTasksCounter" value="2" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
   </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="111" />
+    <option name="LAST_COMMIT_MESSAGE" value="111" />
+  </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/Pythoncode$DemoClass.coverage" NAME="DemoClass 覆盖结果" MODIFIED="1779969206789" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/Pythoncode$day01.coverage" NAME="day01 覆盖结果" MODIFIED="1780408580009" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/Study" />
     <SUITE FILE_PATH="coverage/Pythoncode$ljh1.coverage" NAME="ljh1 覆盖结果" MODIFIED="1780045234815" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
   </component>
 </project>
