@@ -5,14 +5,7 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="5108f4fb-6914-4289-8411-3469ec54b2e8" name="更改" comment="111">
-      <change afterPath="$PROJECT_DIR$/Study/.env.example" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/day02.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/day03.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/day04_fastapi.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/python-AI应用开发学习路线及提示词/Day03_代码答疑笔记.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/Pythoncode.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/Pythoncode.iml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/python-AI应用开发学习路线及提示词/学习进度.md" beforeDir="false" afterPath="$PROJECT_DIR$/python-AI应用开发学习路线及提示词/学习进度.md" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -31,8 +24,20 @@
   </component>
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
-    <option name="WARN_ABOUT_LARGE_FILES_LIMIT_MB" value="100" />
+    <option name="WARN_ABOUT_LARGE_FILES_LIMIT_MB" value="300" />
   </component>
+  <component name="GitHubPullRequestSearchHistory">{
+  &quot;lastFilter&quot;: {
+    &quot;state&quot;: &quot;OPEN&quot;,
+    &quot;assignee&quot;: &quot;guqiyuan0809&quot;
+  }
+}</component>
+  <component name="GithubPullRequestsUISettings">{
+  &quot;selectedUrlAndAccountId&quot;: {
+    &quot;url&quot;: &quot;https://github.com/guqiyuan0809/Python_AI.git&quot;,
+    &quot;accountId&quot;: &quot;2901b827-090a-4273-bad1-51c34d081cae&quot;
+  }
+}</component>
   <component name="McpProjectServerCommands">
     <commands />
     <urls />
@@ -108,32 +113,32 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "ModuleVcsDetector.initialDetectionPerformed": "true",
-    "Python.DemoClass.executor": "Run",
-    "Python.day01.executor": "Run",
-    "Python.day02.executor": "Run",
-    "Python.day03.executor": "Run",
-    "Python.day04_fastapi.executor": "Run",
-    "Python.ljh1.executor": "Run",
-    "Python.run_day04.executor": "Run",
-    "RunOnceActivity.MCP Project settings loaded": "true",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
-    "RunOnceActivity.git.unshallow": "true",
-    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
-    "codeWithMe.voiceChat.enabledByDefault": "false",
-    "git-widget-placeholder": "master",
-    "node.js.detected.package.eslint": "true",
-    "node.js.detected.package.tslint": "true",
-    "node.js.selected.package.eslint": "(autodetect)",
-    "node.js.selected.package.tslint": "(autodetect)",
-    "nodejs_package_manager_path": "npm",
-    "settings.editor.selected.configurable": "build.tools",
-    "vue.rearranger.settings.migration": "true"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;Python.DemoClass.executor&quot;: &quot;Run&quot;,
+    &quot;Python.day01.executor&quot;: &quot;Run&quot;,
+    &quot;Python.day02.executor&quot;: &quot;Run&quot;,
+    &quot;Python.day03.executor&quot;: &quot;Run&quot;,
+    &quot;Python.day04_fastapi.executor&quot;: &quot;Run&quot;,
+    &quot;Python.ljh1.executor&quot;: &quot;Run&quot;,
+    &quot;Python.run_day04.executor&quot;: &quot;Run&quot;,
+    &quot;RunOnceActivity.MCP Project settings loaded&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.typescript.service.memoryLimit.init&quot;: &quot;true&quot;,
+    &quot;codeWithMe.voiceChat.enabledByDefault&quot;: &quot;false&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;master&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;build.tools&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
   }
-}]]></component>
+}</component>
   <component name="RunManager" selected="Python.run_day04">
     <configuration name="day02" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="Pythoncode" />
@@ -245,7 +250,8 @@
       <workItem from="1780626066693" duration="10324000" />
       <workItem from="1780740214472" duration="8645000" />
       <workItem from="1780827813433" duration="11311000" />
-      <workItem from="1780905925463" duration="3296000" />
+      <workItem from="1780905925463" duration="3917000" />
+      <workItem from="1780990335855" duration="8878000" />
     </task>
     <task id="LOCAL-00001" summary="111">
       <option name="closed" value="true" />
@@ -263,7 +269,23 @@
       <option name="project" value="LOCAL" />
       <updated>1780450845669</updated>
     </task>
-    <option name="localTasksCounter" value="3" />
+    <task id="LOCAL-00003" summary="111">
+      <option name="closed" value="true" />
+      <created>1780922076872</created>
+      <option name="number" value="00003" />
+      <option name="presentableId" value="LOCAL-00003" />
+      <option name="project" value="LOCAL" />
+      <updated>1780922076872</updated>
+    </task>
+    <task id="LOCAL-00004" summary="111">
+      <option name="closed" value="true" />
+      <created>1780922368974</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1780922368974</updated>
+    </task>
+    <option name="localTasksCounter" value="5" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
