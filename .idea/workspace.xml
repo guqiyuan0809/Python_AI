@@ -6,6 +6,8 @@
   <component name="ChangeListManager">
     <list default="true" id="5108f4fb-6914-4289-8411-3469ec54b2e8" name="更改" comment="111">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/chat_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/chat_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/python-AI应用开发学习路线及提示词/学习进度.md" beforeDir="false" afterPath="$PROJECT_DIR$/python-AI应用开发学习路线及提示词/学习进度.md" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -251,7 +253,7 @@
       <workItem from="1780740214472" duration="8645000" />
       <workItem from="1780827813433" duration="11311000" />
       <workItem from="1780905925463" duration="3917000" />
-      <workItem from="1780990335855" duration="8878000" />
+      <workItem from="1780990335855" duration="9887000" />
     </task>
     <task id="LOCAL-00001" summary="111">
       <option name="closed" value="true" />
@@ -285,7 +287,15 @@
       <option name="project" value="LOCAL" />
       <updated>1780922368974</updated>
     </task>
-    <option name="localTasksCounter" value="5" />
+    <task id="LOCAL-00005" summary="111">
+      <option name="closed" value="true" />
+      <created>1781005474409</created>
+      <option name="number" value="00005" />
+      <option name="presentableId" value="LOCAL-00005" />
+      <option name="project" value="LOCAL" />
+      <updated>1781005474409</updated>
+    </task>
+    <option name="localTasksCounter" value="6" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">

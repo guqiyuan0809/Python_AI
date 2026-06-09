@@ -6,6 +6,7 @@
 
 import json
 from collections.abc import Iterator
+from uuid import uuid4
 
 from openai import OpenAI
 
@@ -51,12 +52,14 @@ def build_sse_event(data: dict) -> str:
 
 def stream_chat_events(message: str, trace_id: str) -> Iterator[str]:
     client = create_client(timeout=60.0)
+    stream_id = uuid4().hex
     full_answer: list[str] = []
 
     yield build_sse_event(
         {
             "type": "start",
             "trace_id": trace_id,
+            "stream_id": stream_id,
             "message": "stream started",
         }
     )
@@ -83,15 +86,23 @@ def stream_chat_events(message: str, trace_id: str) -> Iterator[str]:
                 {
                     "type": "delta",
                     "trace_id": trace_id,
+                    "stream_id": stream_id,
                     "delta": delta,
                 }
             )
 
+        answer = "".join(full_answer)
+        save_stream_answer(
+            stream_id=stream_id,
+            trace_id=trace_id,
+            question=message,
+            answer=answer,
+        )
         yield build_sse_event(
             {
                 "type": "done",
                 "trace_id": trace_id,
-                "answer": "".join(full_answer),
+                "stream_id": stream_id,
             }
         )
     except Exception as exc:
@@ -99,7 +110,23 @@ def stream_chat_events(message: str, trace_id: str) -> Iterator[str]:
             {
                 "type": "error",
                 "trace_id": trace_id,
+                "stream_id": stream_id,
                 "code": 50001,
                 "message": f"模型流式调用失败：{type(exc).__name__}",
             }
         )
+
+
+def save_stream_answer(
+    stream_id: str,
+    trace_id: str,
+    question: str,
+    answer: str,
+) -> None:
+    """
+    这里是企业项目中的落库扩展点。
+
+    真实项目里可以保存到 MySQL / Redis / MongoDB，
+    用于会话历史、审计日志、上下文恢复和问题排查。
+    """
+    return None
