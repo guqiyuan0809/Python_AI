@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
+from day04_app.common.exceptions import ModelCallException
 from day04_app.common.response import ApiResponse, success
 from day04_app.database import get_db
 from day04_app.schemas.chat_schema import (
@@ -28,7 +29,9 @@ from day04_app.services.session_service import (
     build_messages,
     create_session,
     get_session_messages,
+    update_message,
 )
+from settings import settings
 
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -42,6 +45,12 @@ def to_message_item(message) -> ChatMessageItem:
         stream_id=message.stream_id,
         role=message.role,
         content=message.content,
+        model=message.model,
+        prompt_tokens=message.prompt_tokens,
+        completion_tokens=message.completion_tokens,
+        total_tokens=message.total_tokens,
+        status=message.status,
+        error_message=message.error_message,
         created_at=message.created_at.isoformat(timespec="seconds"),
     )
 
@@ -94,15 +103,34 @@ def session_chat(
         current_question=request_body.message,
         history_limit=request_body.history_limit,
     )
-    result = safe_chat_with_messages(messages)
-
     add_message(db, request_body.session_id, "user", request_body.message, trace_id=trace_id)
-    add_message(
+    assistant_message = add_message(
         db,
         request_body.session_id,
         "assistant",
-        result.answer,
+        "AI 回答生成中",
         trace_id=trace_id,
+        model=settings.dashscope_model,
+        status="pending",
+    )
+
+    try:
+        result = safe_chat_with_messages(messages)
+    except ModelCallException as exc:
+        update_message(
+            db,
+            assistant_message.message_id,
+            content=exc.message,
+            status="error",
+            error_message=exc.message,
+        )
+        raise
+
+    update_message(
+        db,
+        assistant_message.message_id,
+        content=result.answer,
+        status="success",
         prompt_tokens=result.prompt_tokens,
         completion_tokens=result.completion_tokens,
         total_tokens=result.total_tokens,

@@ -72,6 +72,44 @@ def add_message(
     return message
 
 
+def get_message(db: Session, message_id: str) -> ChatMessage:
+    statement = select(ChatMessage).where(ChatMessage.message_id == message_id)
+    message = db.scalars(statement).first()
+    if message is None:
+        raise BusinessException(code=40005, message="消息不存在")
+    return message
+
+
+def update_message(
+    db: Session,
+    message_id: str,
+    content: str | None = None,
+    status: str | None = None,
+    error_message: str | None = None,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
+    total_tokens: int | None = None,
+) -> ChatMessage:
+    message = get_message(db, message_id)
+
+    if content is not None:
+        message.content = content
+    if status is not None:
+        message.status = status
+    if error_message is not None:
+        message.error_message = error_message
+    if prompt_tokens is not None:
+        message.prompt_tokens = prompt_tokens
+    if completion_tokens is not None:
+        message.completion_tokens = completion_tokens
+    if total_tokens is not None:
+        message.total_tokens = total_tokens
+
+    db.commit()
+    db.refresh(message)
+    return message
+
+
 def get_session_messages(db: Session, session_id: str) -> list[ChatMessage]:
     get_session(db, session_id)
     statement = (

@@ -35,6 +35,12 @@ class ChatMessageItem(BaseModel):
     stream_id: str | None = None
     role: str
     content: str
+    model: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    status: str
+    error_message: str | None = None
     created_at: str
 
 
