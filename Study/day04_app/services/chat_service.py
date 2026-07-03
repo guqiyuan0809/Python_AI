@@ -24,14 +24,19 @@ def create_client(timeout: float = 30.0) -> OpenAI:
 
 
 def safe_chat(message: str) -> ChatResponse:
+    messages = [
+        {"role": "system", "content": "你是一个简洁专业的 Python AI 助手。"},
+        {"role": "user", "content": message},
+    ]
+    return safe_chat_with_messages(messages)
+
+
+def safe_chat_with_messages(messages: list[dict]) -> ChatResponse:
     client = create_client(timeout=30.0)
     try:
         response = client.chat.completions.create(
             model=settings.dashscope_model,
-            messages=[
-                {"role": "system", "content": "你是一个简洁专业的 Python AI 助手。"},
-                {"role": "user", "content": message},
-            ],
+            messages=messages,
             temperature=0.3,
             max_tokens=300,
         )
