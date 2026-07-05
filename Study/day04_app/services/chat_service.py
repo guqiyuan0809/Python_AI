@@ -50,6 +50,24 @@ def safe_chat_with_messages(messages: list[dict]) -> ChatResponse:
         raise ModelCallException(message=f"模型调用失败：{type(exc).__name__}") from exc
 
 
+def summarize_messages_with_model(history_text: str) -> str:
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是一个会话摘要助手。请把用户和 AI 的历史对话压缩成简洁摘要，"
+                "保留用户目标、关键事实、已达成结论、未解决问题。不要添加历史中不存在的信息。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"请总结以下历史对话，控制在 300 字以内：\n{history_text}",
+        },
+    ]
+    result = safe_chat_with_messages(messages)
+    return result.answer
+
+
 def build_sse_event(data: dict) -> str:
     json_data = json.dumps(data, ensure_ascii=False)
     return f"data: {json_data}\n\n"

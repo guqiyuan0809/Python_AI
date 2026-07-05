@@ -4,7 +4,7 @@
 类似 Java 里的 ChatController。
 """
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -15,10 +15,13 @@ from day04_app.schemas.chat_schema import (
     ChatMessageItem,
     ChatRequest,
     ChatResponse,
+    ChatSessionItem,
     CreateSessionResponse,
     RefreshSessionSummaryResponse,
     SessionChatRequest,
+    SessionListResponse,
     SessionMessagesResponse,
+    SessionMessagesPageResponse,
 )
 from day04_app.services.chat_service import (
     safe_chat,
@@ -31,6 +34,8 @@ from day04_app.services.session_service import (
     create_session,
     get_session,
     get_session_messages,
+    get_session_messages_page,
+    list_sessions,
     refresh_session_summary,
     should_refresh_summary_for_session,
     update_message,
@@ -59,6 +64,18 @@ def to_message_item(message) -> ChatMessageItem:
     )
 
 
+def to_session_item(session) -> ChatSessionItem:
+    return ChatSessionItem(
+        session_id=session.session_id,
+        user_id=session.user_id,
+        title=session.title,
+        summary=session.summary,
+        status=session.status,
+        created_at=session.created_at.isoformat(timespec="seconds"),
+        updated_at=session.updated_at.isoformat(timespec="seconds"),
+    )
+
+
 @router.post("", response_model=ApiResponse[ChatResponse])
 def chat(request_body: ChatRequest, request: Request) -> ApiResponse[ChatResponse]:
     result = safe_chat(request_body.message)
@@ -73,6 +90,32 @@ def create_chat_session(
     return success(
         CreateSessionResponse(session_id=session_id),
         message="会话创建成功",
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.get("/sessions", response_model=ApiResponse[SessionListResponse])
+def list_chat_sessions(
+    request: Request,
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(10, ge=1, le=50, description="每页数量"),
+    user_id: str | None = Query(None, description="用户 ID，可选筛选条件"),
+    db: Session = Depends(get_db),
+) -> ApiResponse[SessionListResponse]:
+    # 查询会话列表时只返回会话级信息，不返回消息明细，避免列表页数据过大。
+    sessions, total = list_sessions(
+        db,
+        page=page,
+        page_size=page_size,
+        user_id=user_id,
+    )
+    return success(
+        SessionListResponse(
+            total=total,
+            page=page,
+            page_size=page_size,
+            items=[to_session_item(session) for session in sessions],
+        ),
         trace_id=request.state.trace_id,
     )
 
@@ -96,6 +139,37 @@ def list_session_messages(
     )
 
 
+@router.get(
+    "/sessions/{session_id}/messages/page",
+    response_model=ApiResponse[SessionMessagesPageResponse],
+)
+def list_session_messages_page(
+    session_id: str,
+    request: Request,
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(20, ge=1, le=100, description="每页消息数量"),
+    db: Session = Depends(get_db),
+) -> ApiResponse[SessionMessagesPageResponse]:
+    chat_session = get_session(db, session_id)
+    messages, total = get_session_messages_page(
+        db,
+        session_id=session_id,
+        page=page,
+        page_size=page_size,
+    )
+    return success(
+        SessionMessagesPageResponse(
+            session_id=session_id,
+            summary=chat_session.summary,
+            total=total,
+            page=page,
+            page_size=page_size,
+            messages=[to_message_item(message) for message in messages],
+        ),
+        trace_id=request.state.trace_id,
+    )
+
+
 @router.post(
     "/sessions/{session_id}/summary/refresh",
     response_model=ApiResponse[RefreshSessionSummaryResponse],
@@ -103,9 +177,15 @@ def list_session_messages(
 def refresh_summary(
     session_id: str, request: Request, db: Session = Depends(get_db)
 ) -> ApiResponse[RefreshSessionSummaryResponse]:
-    summary = refresh_session_summary(db, session_id)
+    summary_record = refresh_session_summary(db, session_id)
     return success(
-        RefreshSessionSummaryResponse(session_id=session_id, summary=summary),
+        RefreshSessionSummaryResponse(
+            session_id=session_id,
+            summary_id=summary_record.summary_id,
+            summary=summary_record.summary,
+            summary_until_message_id=summary_record.summary_until_message_id,
+            version=summary_record.version,
+        ),
         message="会话摘要刷新成功",
         trace_id=request.state.trace_id,
     )

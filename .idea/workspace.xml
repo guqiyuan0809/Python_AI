@@ -4,13 +4,15 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="5108f4fb-6914-4289-8411-3469ec54b2e8" name="更改" comment="添加pending中间状态消息到消息表中在调用模型之前，在调用模型之后更新该pending消息">
-      <change afterPath="$PROJECT_DIR$/Study/migrate_day08.py" afterDir="false" />
+    <list default="true" id="5108f4fb-6914-4289-8411-3469ec54b2e8" name="更改" comment="粗略识别token并刷新会话摘要">
+      <change afterPath="$PROJECT_DIR$/Study/migrate_day08_summary_table.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Study/day04_app/models.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/models.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Study/day04_app/routers/chat_router.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/routers/chat_router.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Study/day04_app/schemas/chat_schema.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/schemas/chat_schema.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/chat_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/chat_service.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Study/day04_app/services/session_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/session_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/python-AI应用开发学习路线及提示词/学习进度.md" beforeDir="false" afterPath="$PROJECT_DIR$/python-AI应用开发学习路线及提示词/学习进度.md" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -52,61 +54,61 @@
   </component>
   <component name="NextEditCompletionFeaturesState">
     <decayedCancelled>
-      <entry key="MS100" value="1.0" />
-      <entry key="MS500" value="1.00000010249096" />
-      <entry key="S2" value="1.0178995945535427" />
-      <entry key="S5" value="1.2147620917267075" />
-      <entry key="S10" value="1.689820049217965" />
-      <entry key="S30" value="3.540787650654889" />
-      <entry key="S60" value="4.844800207422644" />
-      <entry key="M2" value="5.78581972583167" />
-      <entry key="M5" value="6.476661803753465" />
-      <entry key="M10" value="6.747684824955646" />
-      <entry key="M15" value="7.073102452300168" />
-      <entry key="M30" value="11.356684398111273" />
-      <entry key="H1" value="29.78398154314741" />
-      <entry key="H2" value="74.55549498000107" />
-      <entry key="H4" value="159.27118612285568" />
-      <entry key="D1" value="434.77988695774883" />
-      <entry key="W1" value="540.3300502322028" />
+      <entry key="MS100" value="1.0000000006017986" />
+      <entry key="MS500" value="1.0145004839967946" />
+      <entry key="S2" value="1.4621028664344706" />
+      <entry key="S5" value="2.0767445182898077" />
+      <entry key="S10" value="2.4588881687161974" />
+      <entry key="S30" value="2.7979926882175294" />
+      <entry key="S60" value="2.8959950020734073" />
+      <entry key="M2" value="2.947222791474198" />
+      <entry key="M5" value="2.9786999704107107" />
+      <entry key="M10" value="2.989318196327856" />
+      <entry key="M15" value="2.992880481589447" />
+      <entry key="M30" value="3.010099960000058" />
+      <entry key="H1" value="4.005934170211413" />
+      <entry key="H2" value="16.56581041191" />
+      <entry key="H4" value="70.85038690511263" />
+      <entry key="D1" value="382.04192789751943" />
+      <entry key="W1" value="536.0677219775723" />
     </decayedCancelled>
     <decayedSelected>
       <entry key="MS100" value="0.0" />
       <entry key="MS500" value="0.0" />
       <entry key="S2" value="0.0" />
       <entry key="S5" value="0.0" />
-      <entry key="S10" value="4.007344575721877E-213" />
-      <entry key="S30" value="2.50062405552006E-71" />
-      <entry key="S60" value="8.510014638561147E-36" />
-      <entry key="M2" value="5.809167451998855E-18" />
-      <entry key="M5" value="3.237496341024812E-7" />
-      <entry key="M10" value="0.0012800306456683455" />
-      <entry key="M15" value="0.020754903246303278" />
-      <entry key="M30" value="0.3903567751507421" />
-      <entry key="H1" value="2.869289394541598" />
-      <entry key="H2" value="12.932014107088024" />
-      <entry key="H4" value="37.88013262413531" />
-      <entry key="D1" value="128.96105862482605" />
-      <entry key="W1" value="164.92432048313134" />
+      <entry key="S10" value="0.0" />
+      <entry key="S30" value="2.2208257636324078E-254" />
+      <entry key="S60" value="2.5360823309712102E-127" />
+      <entry key="M2" value="1.0028371546276944E-63" />
+      <entry key="M5" value="1.6034517445632056E-25" />
+      <entry key="M10" value="9.00831722852525E-13" />
+      <entry key="M15" value="1.6421125335828687E-8" />
+      <entry key="M30" value="3.4721847306184403E-4" />
+      <entry key="H1" value="0.08557460511978124" />
+      <entry key="H2" value="2.2333225191090618" />
+      <entry key="H4" value="15.741790509306474" />
+      <entry key="D1" value="111.4035496954591" />
+      <entry key="W1" value="161.51198927520812" />
     </decayedSelected>
     <decayedShown>
-      <entry key="MS100" value="0.9330329915368074" />
-      <entry key="MS500" value="0.9862328061353589" />
-      <entry key="S2" value="1.0144026702626001" />
-      <entry key="S5" value="1.2131942799653024" />
-      <entry key="S10" value="1.6888031349647872" />
-      <entry key="S30" value="3.5400988053606666" />
-      <entry key="S60" value="4.844326104947528" />
-      <entry key="M2" value="5.7855351340916545" />
-      <entry key="M5" value="6.476534210357622" />
-      <entry key="M10" value="6.748888733484628" />
-      <entry key="M15" value="7.093708527641409" />
-      <entry key="M30" value="11.746102290027938" />
-      <entry key="H1" value="32.650539944728905" />
-      <entry key="H2" value="87.48224946697874" />
-      <entry key="H4" value="197.14398890934999" />
-      <entry key="D1" value="563.73683012798" />
-      <entry key="W1" value="705.2536184448459" />
+      <entry key="MS100" value="0.9460576472832154" />
+      <entry key="MS500" value="1.0032527044083819" />
+      <entry key="S2" value="1.4576961956579613" />
+      <entry key="S5" value="2.0741709715639" />
+      <entry key="S10" value="2.457356993091667" />
+      <entry key="S30" value="2.797410992471774" />
+      <entry key="S60" value="2.89569391889622" />
+      <entry key="M2" value="2.9470695801571036" />
+      <entry key="M5" value="2.978638030413598" />
+      <entry key="M10" value="2.989287115833656" />
+      <entry key="M15" value="2.9928597527073757" />
+      <entry key="M30" value="3.0104358419981545" />
+      <entry key="H1" value="4.091420176961156" />
+      <entry key="H2" value="18.798216357521497" />
+      <entry key="H4" value="86.5891232636453" />
+      <entry key="D1" value="493.4419198673919" />
+      <entry key="W1" value="697.5789741344348" />
     </decayedShown>
   </component>
   <component name="ProjectColorInfo">{
@@ -270,7 +272,7 @@
       <workItem from="1782783214033" duration="2980000" />
       <workItem from="1782974679779" duration="8422000" />
       <workItem from="1783038451296" duration="11364000" />
-      <workItem from="1783214082225" duration="1247000" />
+      <workItem from="1783214082225" duration="8954000" />
     </task>
     <task id="LOCAL-00001" summary="111">
       <option name="closed" value="true" />
@@ -336,7 +338,15 @@
       <option name="project" value="LOCAL" />
       <updated>1783047308712</updated>
     </task>
-    <option name="localTasksCounter" value="9" />
+    <task id="LOCAL-00009" summary="粗略识别token并刷新会话摘要">
+      <option name="closed" value="true" />
+      <created>1783215479038</created>
+      <option name="number" value="00009" />
+      <option name="presentableId" value="LOCAL-00009" />
+      <option name="project" value="LOCAL" />
+      <updated>1783215479038</updated>
+    </task>
+    <option name="localTasksCounter" value="10" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -347,7 +357,19 @@
       <map>
         <entry key="MAIN">
           <value>
-            <State />
+            <State>
+              <option name="FILTERS">
+                <map>
+                  <entry key="branch">
+                    <value>
+                      <list>
+                        <option value="master" />
+                      </list>
+                    </value>
+                  </entry>
+                </map>
+              </option>
+            </State>
           </value>
         </entry>
       </map>
@@ -358,7 +380,8 @@
     <MESSAGE value="11" />
     <MESSAGE value="会话以及多轮对话的实现" />
     <MESSAGE value="添加pending中间状态消息到消息表中在调用模型之前，在调用模型之后更新该pending消息" />
-    <option name="LAST_COMMIT_MESSAGE" value="添加pending中间状态消息到消息表中在调用模型之前，在调用模型之后更新该pending消息" />
+    <MESSAGE value="粗略识别token并刷新会话摘要" />
+    <option name="LAST_COMMIT_MESSAGE" value="粗略识别token并刷新会话摘要" />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/Pythoncode$DemoClass.coverage" NAME="DemoClass 覆盖结果" MODIFIED="1779969206789" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />

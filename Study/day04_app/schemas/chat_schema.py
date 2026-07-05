@@ -28,9 +28,33 @@ class CreateSessionResponse(BaseModel):
     session_id: str
 
 
+class ChatSessionItem(BaseModel):
+    session_id: str
+    user_id: str | None = None
+    title: str | None = None
+    summary: str | None = None
+    status: str
+    created_at: str
+    updated_at: str
+
+
+class SessionListResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[ChatSessionItem]
+
+
 class RefreshSessionSummaryResponse(BaseModel):
     session_id: str
+    # 本次新生成的摘要版本 ID。
+    summary_id: str | None = None
+    # 最新摘要内容，会作为后续长对话的长期上下文。
     summary: str
+    # 表示这份摘要已经覆盖到哪一条消息。
+    summary_until_message_id: str | None = None
+    # 当前会话下的摘要版本号。
+    version: int | None = None
 
 
 class ChatMessageItem(BaseModel):
@@ -52,4 +76,13 @@ class ChatMessageItem(BaseModel):
 class SessionMessagesResponse(BaseModel):
     session_id: str
     summary: str | None = None
+    messages: list[ChatMessageItem]
+
+
+class SessionMessagesPageResponse(BaseModel):
+    session_id: str
+    summary: str | None = None
+    total: int
+    page: int
+    page_size: int
     messages: list[ChatMessageItem]
