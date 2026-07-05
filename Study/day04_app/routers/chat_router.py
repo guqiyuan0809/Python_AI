@@ -16,6 +16,7 @@ from day04_app.schemas.chat_schema import (
     ChatRequest,
     ChatResponse,
     CreateSessionResponse,
+    RefreshSessionSummaryResponse,
     SessionChatRequest,
     SessionMessagesResponse,
 )
@@ -28,7 +29,10 @@ from day04_app.services.session_service import (
     add_message,
     build_messages,
     create_session,
+    get_session,
     get_session_messages,
+    refresh_session_summary,
+    should_refresh_summary_for_session,
     update_message,
 )
 from settings import settings
@@ -80,12 +84,29 @@ def create_chat_session(
 def list_session_messages(
     session_id: str, request: Request, db: Session = Depends(get_db)
 ) -> ApiResponse[SessionMessagesResponse]:
+    chat_session = get_session(db, session_id)
     messages = get_session_messages(db, session_id)
     return success(
         SessionMessagesResponse(
             session_id=session_id,
+            summary=chat_session.summary,
             messages=[to_message_item(message) for message in messages],
         ),
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/summary/refresh",
+    response_model=ApiResponse[RefreshSessionSummaryResponse],
+)
+def refresh_summary(
+    session_id: str, request: Request, db: Session = Depends(get_db)
+) -> ApiResponse[RefreshSessionSummaryResponse]:
+    summary = refresh_session_summary(db, session_id)
+    return success(
+        RefreshSessionSummaryResponse(session_id=session_id, summary=summary),
+        message="会话摘要刷新成功",
         trace_id=request.state.trace_id,
     )
 
@@ -135,6 +156,8 @@ def session_chat(
         completion_tokens=result.completion_tokens,
         total_tokens=result.total_tokens,
     )
+    if should_refresh_summary_for_session(db, request_body.session_id):
+        refresh_session_summary(db, request_body.session_id)
     return success(result, trace_id=trace_id)
 
 

@@ -14,6 +14,10 @@ from day04_app.models import ChatMessage, ChatSession
 
 
 SYSTEM_PROMPT = "你是一个专业、简洁的 Python AI 应用开发老师。"
+SUMMARY_PROMPT_PREFIX = "以下是本会话早期重要信息摘要，请在回答时作为背景参考："
+SUMMARY_REFRESH_MESSAGE_THRESHOLD = 8
+SUMMARY_REFRESH_TOKEN_THRESHOLD = 1200
+CHARS_PER_TOKEN_ESTIMATE = 4
 
 
 def create_session(db: Session, user_id: str | None = None, title: str | None = None) -> str:
@@ -33,6 +37,14 @@ def get_session(db: Session, session_id: str) -> ChatSession:
     chat_session = db.scalars(statement).first()
     if chat_session is None:
         raise BusinessException(code=40004, message="会话不存在")
+    return chat_session
+
+
+def update_session_summary(db: Session, session_id: str, summary: str) -> ChatSession:
+    chat_session = get_session(db, session_id)
+    chat_session.summary = summary
+    db.commit()
+    db.refresh(chat_session)
     return chat_session
 
 
@@ -120,6 +132,66 @@ def get_session_messages(db: Session, session_id: str) -> list[ChatMessage]:
     return list(db.scalars(statement).all())
 
 
+def build_simple_summary(messages: list[ChatMessage], max_items: int = 12) -> str:
+    important_messages = [
+        message
+        for message in messages
+        if message.status == "success" and message.role in {"user", "assistant"}
+    ]
+    if not important_messages:
+        return ""
+
+    summary_lines = []
+    for message in important_messages[-max_items:]:
+        role_name = "用户" if message.role == "user" else "AI"
+        content = message.content.replace("\n", " ").strip()
+        if len(content) > 120:
+            content = content[:120] + "..."
+        summary_lines.append(f"{role_name}: {content}")
+
+    return "；".join(summary_lines)
+
+
+def refresh_session_summary(db: Session, session_id: str) -> str:
+    messages = get_session_messages(db, session_id)
+    summary = build_simple_summary(messages)
+    update_session_summary(db, session_id, summary)
+    return summary
+
+
+def should_refresh_summary(db: Session, session_id: str) -> bool:
+    messages = get_session_messages(db, session_id)
+    success_messages = [
+        message
+        for message in messages
+        if message.status == "success" and message.role in {"user", "assistant"}
+    ]
+    return len(success_messages) >= SUMMARY_REFRESH_MESSAGE_THRESHOLD
+
+
+def estimate_text_tokens(text: str) -> int:
+    return max(1, len(text) // CHARS_PER_TOKEN_ESTIMATE)
+
+
+def estimate_messages_tokens(messages: list[ChatMessage]) -> int:
+    return sum(estimate_text_tokens(message.content) for message in messages)
+
+
+def should_refresh_summary_by_token_budget(db: Session, session_id: str) -> bool:
+    messages = [
+        message
+        for message in get_session_messages(db, session_id)
+        if message.status == "success" and message.role in {"user", "assistant"}
+    ]
+    return estimate_messages_tokens(messages) >= SUMMARY_REFRESH_TOKEN_THRESHOLD
+
+
+def should_refresh_summary_for_session(db: Session, session_id: str) -> bool:
+    return should_refresh_summary(db, session_id) or should_refresh_summary_by_token_budget(
+        db, session_id
+    )
+
+
 def get_recent_messages(db: Session, session_id: str, limit: int = 6) -> list[ChatMessage]:
     get_session(db, session_id)
     statement = (
@@ -138,8 +210,17 @@ def build_messages(
     current_question: str,
     history_limit: int = 6,
 ) -> list[dict]:
+    chat_session = get_session(db, session_id)
     history = get_recent_messages(db, session_id, limit=history_limit)
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    if chat_session.summary:
+        messages.append(
+            {
+                "role": "system",
+                "content": f"{SUMMARY_PROMPT_PREFIX}\n{chat_session.summary}",
+            }
+        )
 
     for item in history:
         messages.append(

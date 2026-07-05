@@ -28,6 +28,11 @@ class CreateSessionResponse(BaseModel):
     session_id: str
 
 
+class RefreshSessionSummaryResponse(BaseModel):
+    session_id: str
+    summary: str
+
+
 class ChatMessageItem(BaseModel):
     message_id: str
     session_id: str
@@ -46,4 +51,5 @@ class ChatMessageItem(BaseModel):
 
 class SessionMessagesResponse(BaseModel):
     session_id: str
+    summary: str | None = None
     messages: list[ChatMessageItem]
