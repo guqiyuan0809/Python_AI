@@ -30,7 +30,7 @@ def safe_chat(message: str) -> ChatResponse:
     ]
     return safe_chat_with_messages(messages)
 
-
+# 简单模型对话
 def safe_chat_with_messages(messages: list[dict]) -> ChatResponse:
     client = create_client(timeout=30.0)
     try:
@@ -66,6 +66,24 @@ def summarize_messages_with_model(history_text: str) -> str:
     ]
     result = safe_chat_with_messages(messages)
     return result.answer
+
+
+def generate_session_title_with_model(history_text: str) -> str:
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是一个会话标题生成助手。请根据对话内容生成一个简短中文标题，"
+                "控制在 6 到 18 个字，不要加书名号、引号、标点解释或多余前缀。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"请为下面这段对话生成标题：\n{history_text}",
+        },
+    ]
+    result = safe_chat_with_messages(messages)
+    return result.answer.strip().strip("《》\"'“”")
 
 
 def build_sse_event(data: dict) -> str:

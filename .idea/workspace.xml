@@ -4,10 +4,8 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="5108f4fb-6914-4289-8411-3469ec54b2e8" name="更改" comment="粗略识别token并刷新会话摘要">
-      <change afterPath="$PROJECT_DIR$/Study/migrate_day08_summary_table.py" afterDir="false" />
+    <list default="true" id="5108f4fb-6914-4289-8411-3469ec54b2e8" name="更改" comment="第八天">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Study/day04_app/models.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/models.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Study/day04_app/routers/chat_router.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/routers/chat_router.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Study/day04_app/schemas/chat_schema.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/schemas/chat_schema.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Study/day04_app/services/chat_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/chat_service.py" afterDir="false" />
@@ -20,7 +18,7 @@
     <option name="LAST_RESOLUTION" value="IGNORE" />
   </component>
   <component name="EmbeddingIndexingInfo">
-    <option name="cachedIndexableFilesCount" value="136" />
+    <option name="cachedIndexableFilesCount" value="137" />
   </component>
   <component name="FileTemplateManagerImpl">
     <option name="RECENT_TEMPLATES">
@@ -54,23 +52,23 @@
   </component>
   <component name="NextEditCompletionFeaturesState">
     <decayedCancelled>
-      <entry key="MS100" value="1.0000000006017986" />
-      <entry key="MS500" value="1.0145004839967946" />
-      <entry key="S2" value="1.4621028664344706" />
-      <entry key="S5" value="2.0767445182898077" />
-      <entry key="S10" value="2.4588881687161974" />
-      <entry key="S30" value="2.7979926882175294" />
-      <entry key="S60" value="2.8959950020734073" />
-      <entry key="M2" value="2.947222791474198" />
-      <entry key="M5" value="2.9786999704107107" />
-      <entry key="M10" value="2.989318196327856" />
-      <entry key="M15" value="2.992880481589447" />
-      <entry key="M30" value="3.010099960000058" />
-      <entry key="H1" value="4.005934170211413" />
-      <entry key="H2" value="16.56581041191" />
-      <entry key="H4" value="70.85038690511263" />
-      <entry key="D1" value="382.04192789751943" />
-      <entry key="W1" value="536.0677219775723" />
+      <entry key="MS100" value="1.0" />
+      <entry key="MS500" value="1.000000190725363" />
+      <entry key="S2" value="1.0211749368141594" />
+      <entry key="S5" value="1.2505938524516498" />
+      <entry key="S10" value="1.6556584190305244" />
+      <entry key="S30" value="2.351906009027773" />
+      <entry key="S60" value="2.640090097981501" />
+      <entry key="M2" value="2.810159873722805" />
+      <entry key="M5" value="2.9620262846331857" />
+      <entry key="M10" value="3.3119299227447807" />
+      <entry key="M15" value="3.7802698495585756" />
+      <entry key="M30" value="4.95126356502643" />
+      <entry key="H1" value="6.701266039869403" />
+      <entry key="H2" value="17.359296773961148" />
+      <entry key="H4" value="66.90592396503796" />
+      <entry key="D1" value="378.705385914425" />
+      <entry key="W1" value="539.3828363266655" />
     </decayedCancelled>
     <decayedSelected>
       <entry key="MS100" value="0.0" />
@@ -78,37 +76,37 @@
       <entry key="S2" value="0.0" />
       <entry key="S5" value="0.0" />
       <entry key="S10" value="0.0" />
-      <entry key="S30" value="2.2208257636324078E-254" />
-      <entry key="S60" value="2.5360823309712102E-127" />
-      <entry key="M2" value="1.0028371546276944E-63" />
-      <entry key="M5" value="1.6034517445632056E-25" />
-      <entry key="M10" value="9.00831722852525E-13" />
-      <entry key="M15" value="1.6421125335828687E-8" />
-      <entry key="M30" value="3.4721847306184403E-4" />
-      <entry key="H1" value="0.08557460511978124" />
-      <entry key="H2" value="2.2333225191090618" />
-      <entry key="H4" value="15.741790509306474" />
-      <entry key="D1" value="111.4035496954591" />
-      <entry key="W1" value="161.51198927520812" />
+      <entry key="S30" value="7.314619743190982E-282" />
+      <entry key="S60" value="4.6025867378600216E-141" />
+      <entry key="M2" value="1.3509825288899868E-70" />
+      <entry key="M5" value="2.8630149853455385E-28" />
+      <entry key="M10" value="3.806514906313673E-14" />
+      <entry key="M15" value="1.9921658517273224E-9" />
+      <entry key="M30" value="1.2093836993076603E-4" />
+      <entry key="H1" value="0.05050397341071099" />
+      <entry key="H2" value="1.7157016423158322" />
+      <entry key="H4" value="13.797464632886586" />
+      <entry key="D1" value="108.98244725705885" />
+      <entry key="W1" value="161.00581282530433" />
     </decayedSelected>
     <decayedShown>
-      <entry key="MS100" value="0.9460576472832154" />
-      <entry key="MS500" value="1.0032527044083819" />
-      <entry key="S2" value="1.4576961956579613" />
-      <entry key="S5" value="2.0741709715639" />
-      <entry key="S10" value="2.457356993091667" />
-      <entry key="S30" value="2.797410992471774" />
-      <entry key="S60" value="2.89569391889622" />
-      <entry key="M2" value="2.9470695801571036" />
-      <entry key="M5" value="2.978638030413598" />
-      <entry key="M10" value="2.989287115833656" />
-      <entry key="M15" value="2.9928597527073757" />
-      <entry key="M30" value="3.0104358419981545" />
-      <entry key="H1" value="4.091420176961156" />
-      <entry key="H2" value="18.798216357521497" />
-      <entry key="H4" value="86.5891232636453" />
-      <entry key="D1" value="493.4419198673919" />
-      <entry key="W1" value="697.5789741344348" />
+      <entry key="MS100" value="0.8950250709279725" />
+      <entry key="MS500" value="0.9780636574206782" />
+      <entry key="S2" value="1.0154544917349673" />
+      <entry key="S5" value="1.2474401406916442" />
+      <entry key="S10" value="1.653275354511842" />
+      <entry key="S30" value="2.3506309006904793" />
+      <entry key="S60" value="2.639351202275921" />
+      <entry key="M2" value="2.809760344594431" />
+      <entry key="M5" value="2.9618546259581566" />
+      <entry key="M10" value="3.311823933302697" />
+      <entry key="M15" value="3.7801787754685336" />
+      <entry key="M30" value="4.951311817869868" />
+      <entry key="H1" value="6.7516709103233365" />
+      <entry key="H2" value="19.074266373974705" />
+      <entry key="H4" value="80.70069636816318" />
+      <entry key="D1" value="487.68435000211446" />
+      <entry key="W1" value="700.3879139435442" />
     </decayedShown>
   </component>
   <component name="ProjectColorInfo">{
@@ -272,7 +270,8 @@
       <workItem from="1782783214033" duration="2980000" />
       <workItem from="1782974679779" duration="8422000" />
       <workItem from="1783038451296" duration="11364000" />
-      <workItem from="1783214082225" duration="8954000" />
+      <workItem from="1783214082225" duration="9068000" />
+      <workItem from="1783294111140" duration="7671000" />
     </task>
     <task id="LOCAL-00001" summary="111">
       <option name="closed" value="true" />
@@ -346,7 +345,15 @@
       <option name="project" value="LOCAL" />
       <updated>1783215479038</updated>
     </task>
-    <option name="localTasksCounter" value="10" />
+    <task id="LOCAL-00010" summary="第八天">
+      <option name="closed" value="true" />
+      <created>1783236090487</created>
+      <option name="number" value="00010" />
+      <option name="presentableId" value="LOCAL-00010" />
+      <option name="project" value="LOCAL" />
+      <updated>1783236090487</updated>
+    </task>
+    <option name="localTasksCounter" value="11" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -381,7 +388,8 @@
     <MESSAGE value="会话以及多轮对话的实现" />
     <MESSAGE value="添加pending中间状态消息到消息表中在调用模型之前，在调用模型之后更新该pending消息" />
     <MESSAGE value="粗略识别token并刷新会话摘要" />
-    <option name="LAST_COMMIT_MESSAGE" value="粗略识别token并刷新会话摘要" />
+    <MESSAGE value="第八天" />
+    <option name="LAST_COMMIT_MESSAGE" value="第八天" />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/Pythoncode$DemoClass.coverage" NAME="DemoClass 覆盖结果" MODIFIED="1779969206789" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />

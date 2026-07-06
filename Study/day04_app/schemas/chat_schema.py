@@ -28,6 +28,20 @@ class CreateSessionResponse(BaseModel):
     session_id: str
 
 
+class UpdateSessionTitleRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=30, description="会话标题")
+
+
+class SessionTitleResponse(BaseModel):
+    session_id: str
+    title: str
+
+
+class SessionStatusResponse(BaseModel):
+    session_id: str
+    status: str
+
+
 class ChatSessionItem(BaseModel):
     session_id: str
     user_id: str | None = None

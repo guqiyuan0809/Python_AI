@@ -22,6 +22,9 @@ from day04_app.schemas.chat_schema import (
     SessionListResponse,
     SessionMessagesResponse,
     SessionMessagesPageResponse,
+    SessionStatusResponse,
+    SessionTitleResponse,
+    UpdateSessionTitleRequest,
 )
 from day04_app.services.chat_service import (
     safe_chat,
@@ -30,15 +33,19 @@ from day04_app.services.chat_service import (
 )
 from day04_app.services.session_service import (
     add_message,
+    archive_session,
     build_messages,
     create_session,
+    generate_session_title,
     get_session,
     get_session_messages,
     get_session_messages_page,
     list_sessions,
     refresh_session_summary,
+    restore_session,
     should_refresh_summary_for_session,
     update_message,
+    update_session_title,
 )
 from settings import settings
 
@@ -116,6 +123,93 @@ def list_chat_sessions(
             page_size=page_size,
             items=[to_session_item(session) for session in sessions],
         ),
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.patch(
+    "/sessions/{session_id}/title",
+    response_model=ApiResponse[SessionTitleResponse],
+)
+# 用户输入会话标题
+def update_chat_session_title(
+    session_id: str,
+    request_body: UpdateSessionTitleRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[SessionTitleResponse]:
+    # 手动标题以用户输入为准，适合前端提供“重命名会话”功能。
+    chat_session = update_session_title(db, session_id, request_body.title)
+    return success(
+        SessionTitleResponse(
+            session_id=chat_session.session_id,
+            title=chat_session.title or "",
+        ),
+        message="会话标题更新成功",
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/title/generate",
+    response_model=ApiResponse[SessionTitleResponse],
+)
+# 根据会话历史自动生成标题
+def generate_chat_session_title(
+    session_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[SessionTitleResponse]:
+    # 自动生成标题会读取会话历史，优先调用模型生成，失败时使用规则标题兜底。
+    chat_session = generate_session_title(db, session_id)
+    return success(
+        SessionTitleResponse(
+            session_id=chat_session.session_id,
+            title=chat_session.title or "",
+        ),
+        message="会话标题生成成功",
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.delete(
+    "/sessions/{session_id}",
+    response_model=ApiResponse[SessionStatusResponse],
+)
+def archive_chat_session(
+    session_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[SessionStatusResponse]:
+    # 对外表现为删除会话，底层只做逻辑归档，不物理删除聊天记录。
+    chat_session = archive_session(db, session_id)
+    return success(
+        SessionStatusResponse(
+            session_id=chat_session.session_id,
+            status=chat_session.status,
+        ),
+        message="会话已归档",
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.patch(
+    "/sessions/{session_id}/restore",
+    response_model=ApiResponse[SessionStatusResponse],
+)
+def restore_chat_session(
+    session_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[SessionStatusResponse]:
+    # 恢复归档会话后，它会重新出现在默认会话列表中。
+    chat_session = restore_session(db, session_id)
+    return success(
+        SessionStatusResponse(
+            session_id=chat_session.session_id,
+            status=chat_session.status,
+        ),
+        message="会话已恢复",
         trace_id=request.state.trace_id,
     )
 
