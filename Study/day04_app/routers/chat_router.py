@@ -23,6 +23,7 @@ from day04_app.schemas.chat_schema import (
     SessionMessagesResponse,
     SessionMessagesPageResponse,
     SessionStatusResponse,
+    SessionStreamChatRequest,
     SessionTitleResponse,
     UpdateSessionTitleRequest,
 )
@@ -30,6 +31,7 @@ from day04_app.services.chat_service import (
     safe_chat,
     safe_chat_with_messages,
     stream_chat_events,
+    stream_session_chat_events,
 )
 from day04_app.services.session_service import (
     add_message,
@@ -50,7 +52,7 @@ from day04_app.services.session_service import (
 from settings import settings
 
 
-router = APIRouter(prefix="/api/chat", tags=["chat"])
+router = APIRouter(prefix="/api/chat", tags=["AI 聊天"])
 
 
 def to_message_item(message) -> ChatMessageItem:
@@ -83,13 +85,17 @@ def to_session_item(session) -> ChatSessionItem:
     )
 
 
-@router.post("", response_model=ApiResponse[ChatResponse])
+@router.post("", response_model=ApiResponse[ChatResponse], summary="普通单轮聊天")
 def chat(request_body: ChatRequest, request: Request) -> ApiResponse[ChatResponse]:
     result = safe_chat(request_body.message)
     return success(result, trace_id=request.state.trace_id)
 
 
-@router.post("/sessions", response_model=ApiResponse[CreateSessionResponse])
+@router.post(
+    "/sessions",
+    response_model=ApiResponse[CreateSessionResponse],
+    summary="创建聊天会话",
+)
 def create_chat_session(
     request: Request, db: Session = Depends(get_db)
 ) -> ApiResponse[CreateSessionResponse]:
@@ -101,7 +107,11 @@ def create_chat_session(
     )
 
 
-@router.get("/sessions", response_model=ApiResponse[SessionListResponse])
+@router.get(
+    "/sessions",
+    response_model=ApiResponse[SessionListResponse],
+    summary="分页查询会话列表",
+)
 def list_chat_sessions(
     request: Request,
     page: int = Query(1, ge=1, description="页码，从 1 开始"),
@@ -130,6 +140,7 @@ def list_chat_sessions(
 @router.patch(
     "/sessions/{session_id}/title",
     response_model=ApiResponse[SessionTitleResponse],
+    summary="手动修改会话标题",
 )
 # 用户输入会话标题
 def update_chat_session_title(
@@ -153,6 +164,7 @@ def update_chat_session_title(
 @router.post(
     "/sessions/{session_id}/title/generate",
     response_model=ApiResponse[SessionTitleResponse],
+    summary="自动生成会话标题",
 )
 # 根据会话历史自动生成标题
 def generate_chat_session_title(
@@ -175,6 +187,7 @@ def generate_chat_session_title(
 @router.delete(
     "/sessions/{session_id}",
     response_model=ApiResponse[SessionStatusResponse],
+    summary="归档会话",
 )
 def archive_chat_session(
     session_id: str,
@@ -196,6 +209,7 @@ def archive_chat_session(
 @router.patch(
     "/sessions/{session_id}/restore",
     response_model=ApiResponse[SessionStatusResponse],
+    summary="恢复归档会话",
 )
 def restore_chat_session(
     session_id: str,
@@ -217,6 +231,7 @@ def restore_chat_session(
 @router.get(
     "/sessions/{session_id}/messages",
     response_model=ApiResponse[SessionMessagesResponse],
+    summary="查询会话全部消息",
 )
 def list_session_messages(
     session_id: str, request: Request, db: Session = Depends(get_db)
@@ -236,6 +251,7 @@ def list_session_messages(
 @router.get(
     "/sessions/{session_id}/messages/page",
     response_model=ApiResponse[SessionMessagesPageResponse],
+    summary="分页查询会话消息",
 )
 def list_session_messages_page(
     session_id: str,
@@ -267,6 +283,7 @@ def list_session_messages_page(
 @router.post(
     "/sessions/{session_id}/summary/refresh",
     response_model=ApiResponse[RefreshSessionSummaryResponse],
+    summary="手动刷新会话摘要",
 )
 def refresh_summary(
     session_id: str, request: Request, db: Session = Depends(get_db)
@@ -285,7 +302,11 @@ def refresh_summary(
     )
 
 
-@router.post("/sessions/chat", response_model=ApiResponse[ChatResponse])
+@router.post(
+    "/sessions/chat",
+    response_model=ApiResponse[ChatResponse],
+    summary="会话多轮聊天",
+)
 def session_chat(
     request_body: SessionChatRequest,
     request: Request,
@@ -335,7 +356,7 @@ def session_chat(
     return success(result, trace_id=trace_id)
 
 
-@router.post("/stream")
+@router.post("/stream", summary="普通流式聊天")
 def stream_chat(request_body: ChatRequest, request: Request) -> StreamingResponse:
     trace_id = request.state.trace_id
     return StreamingResponse(
@@ -345,7 +366,27 @@ def stream_chat(request_body: ChatRequest, request: Request) -> StreamingRespons
     )
 
 
-@router.get("/path-variable/{user_id}")
+@router.post("/sessions/stream", summary="会话流式聊天")
+def stream_session_chat(
+    request_body: SessionStreamChatRequest,
+    request: Request,
+) -> StreamingResponse:
+    trace_id = request.state.trace_id
+
+    # SSE 接口返回的是事件流，不适合包一层统一 ApiResponse。
+    return StreamingResponse(
+        stream_session_chat_events(
+            session_id=request_body.session_id,
+            message=request_body.message,
+            trace_id=trace_id,
+            history_limit=request_body.history_limit,
+        ),
+        media_type="text/event-stream",
+        headers={"X-Trace-Id": trace_id},
+    )
+
+
+@router.get("/path-variable/{user_id}", summary="路径参数测试")
 def path_variable(user_id: str, request: Request) -> ApiResponse[dict]:
     return success(
         {"user_id": user_id},

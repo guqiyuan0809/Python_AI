@@ -17,6 +17,12 @@ class SessionChatRequest(BaseModel):
     history_limit: int = Field(6, ge=0, le=20, description="携带最近多少条历史消息")
 
 
+class SessionStreamChatRequest(BaseModel):
+    session_id: str = Field(..., min_length=1, description="会话 ID")
+    message: str = Field(..., min_length=1, description="用户输入的问题")
+    history_limit: int = Field(6, ge=0, le=20, description="携带最近多少条历史消息")
+
+
 class ChatResponse(BaseModel):
     answer: str
     prompt_tokens: int

@@ -30,8 +30,9 @@ def safe_chat(message: str) -> ChatResponse:
     ]
     return safe_chat_with_messages(messages)
 
-# 简单模型对话
+
 def safe_chat_with_messages(messages: list[dict]) -> ChatResponse:
+    # 普通非流式调用：一次性拿到完整模型回答和 token 用量。
     client = create_client(timeout=30.0)
     try:
         response = client.chat.completions.create(
@@ -95,6 +96,9 @@ def stream_chat_events(message: str, trace_id: str) -> Iterator[str]:
     client = create_client(timeout=60.0)
     stream_id = uuid4().hex
     full_answer: list[str] = []
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
 
     yield build_sse_event(
         {
@@ -115,10 +119,22 @@ def stream_chat_events(message: str, trace_id: str) -> Iterator[str]:
             temperature=0.3,
             max_tokens=500,
             stream=True,
+            stream_options={"include_usage": True},
         )
 
         for chunk in stream:
-            delta = chunk.choices[0].delta.content
+            # 部分兼容模型会在最后一个流式 chunk 中返回 usage。
+            usage = getattr(chunk, "usage", None)
+            if usage:
+                prompt_tokens = getattr(usage, "prompt_tokens", None)
+                completion_tokens = getattr(usage, "completion_tokens", None)
+                total_tokens = getattr(usage, "total_tokens", None)
+
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+
+            delta = choices[0].delta.content
             if not delta:
                 continue
 
@@ -144,6 +160,11 @@ def stream_chat_events(message: str, trace_id: str) -> Iterator[str]:
                 "type": "done",
                 "trace_id": trace_id,
                 "stream_id": stream_id,
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                },
             }
         )
     except Exception as exc:
@@ -156,6 +177,177 @@ def stream_chat_events(message: str, trace_id: str) -> Iterator[str]:
                 "message": f"模型流式调用失败：{type(exc).__name__}",
             }
         )
+
+
+def stream_session_chat_events(
+    session_id: str,
+    message: str,
+    trace_id: str,
+    history_limit: int = 6,
+) -> Iterator[str]:
+    stream_id = uuid4().hex
+    full_answer: list[str] = []
+    assistant_message_id: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+
+    # StreamingResponse 会在返回后继续迭代生成器，所以这里单独创建数据库连接。
+    from day04_app.database import SessionLocal
+    from day04_app.services.session_service import (
+        add_message,
+        build_messages,
+        refresh_session_summary,
+        should_refresh_summary_for_session,
+        update_message,
+    )
+
+    db = SessionLocal()
+    try:
+        # 先基于当前会话历史构造模型上下文，此时 build_messages 会把本次问题追加到 messages 末尾。
+        messages = build_messages(
+            db=db,
+            session_id=session_id,
+            current_question=message,
+            history_limit=history_limit,
+        )
+
+        # 用户消息先落库，保证即使模型后续失败，也能查到用户这次问了什么。
+        add_message(
+            db,
+            session_id,
+            "user",
+            message,
+            trace_id=trace_id,
+            stream_id=stream_id,
+        )
+        assistant_message = add_message(
+            db,
+            session_id,
+            "assistant",
+            "AI 回答生成中",
+            trace_id=trace_id,
+            stream_id=stream_id,
+            model=settings.dashscope_model,
+            status="pending",
+        )
+        assistant_message_id = assistant_message.message_id
+
+        yield build_sse_event(
+            {
+                "type": "start",
+                "session_id": session_id,
+                "trace_id": trace_id,
+                "stream_id": stream_id,
+                "message_id": assistant_message_id,
+            }
+        )
+
+        # 真正开始推流后，把 assistant 消息从 pending 更新为 streaming。
+        update_message(
+            db,
+            assistant_message_id,
+            status="streaming",
+        )
+
+        client = create_client(timeout=60.0)
+        stream = client.chat.completions.create(
+            model=settings.dashscope_model,
+            messages=messages,
+            temperature=0.3,
+            max_tokens=500,
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+
+        for chunk in stream:
+            # 部分兼容模型会在最后一个流式 chunk 中返回 usage，用于统计 token 消耗。
+            usage = getattr(chunk, "usage", None)
+            if usage:
+                prompt_tokens = getattr(usage, "prompt_tokens", None)
+                completion_tokens = getattr(usage, "completion_tokens", None)
+                total_tokens = getattr(usage, "total_tokens", None)
+
+            # usage chunk 可能没有 choices，所以不能直接 chunk.choices[0]。
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+
+            delta = choices[0].delta.content
+            if not delta:
+                continue
+
+            # 边返回给前端，边在服务端拼接完整回答，方便流结束后一次性落库。
+            full_answer.append(delta)
+            yield build_sse_event(
+                {
+                    "type": "delta",
+                    "session_id": session_id,
+                    "trace_id": trace_id,
+                    "stream_id": stream_id,
+                    "message_id": assistant_message_id,
+                    "delta": delta,
+                }
+            )
+
+        answer = "".join(full_answer)
+        update_message(
+            db,
+            assistant_message_id,
+            content=answer,
+            status="success",
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+        )
+
+        # 流式回答落库后，再按原有规则判断是否需要刷新会话摘要。
+        if should_refresh_summary_for_session(db, session_id):
+            refresh_session_summary(db, session_id)
+
+        yield build_sse_event(
+            {
+                "type": "done",
+                "session_id": session_id,
+                "trace_id": trace_id,
+                "stream_id": stream_id,
+                "message_id": assistant_message_id,
+            }
+        )
+    except Exception as exc:
+        error_message = f"模型流式调用失败：{type(exc).__name__}"
+
+        # 中途失败时优先保存已经输出的半截内容；没有半截内容才保存错误提示。
+        partial_answer = "".join(full_answer)
+        failed_content = partial_answer if partial_answer else error_message
+
+        # 如果 assistant 占位消息已经创建，就把它标记为 error，方便历史记录和排查。
+        if assistant_message_id:
+            update_message(
+                db,
+                assistant_message_id,
+                content=failed_content,
+                status="error",
+                error_message=error_message,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+            )
+
+        yield build_sse_event(
+            {
+                "type": "error",
+                "session_id": session_id,
+                "trace_id": trace_id,
+                "stream_id": stream_id,
+                "message_id": assistant_message_id,
+                "code": 50001,
+                "message": error_message,
+                "partial_answer": partial_answer,
+            }
+        )
+    finally:
+        db.close()
 
 
 def save_stream_answer(
