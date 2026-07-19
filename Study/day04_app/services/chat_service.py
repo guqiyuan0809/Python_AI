@@ -5,6 +5,7 @@
 """
 
 import json
+import time
 from collections.abc import Iterator
 from uuid import uuid4
 
@@ -194,6 +195,7 @@ def stream_session_chat_events(
 
     # StreamingResponse 会在返回后继续迭代生成器，所以这里单独创建数据库连接。
     from day04_app.database import SessionLocal
+    from day04_app.services.call_log_service import create_call_log
     from day04_app.services.session_service import (
         add_message,
         build_messages,
@@ -250,6 +252,8 @@ def stream_session_chat_events(
             status="streaming",
         )
 
+        # 只统计真正调用模型的耗时，不把前面的数据库准备时间算进去。
+        start_time = time.perf_counter()
         client = create_client(timeout=60.0)
         stream = client.chat.completions.create(
             model=settings.dashscope_model,
@@ -291,6 +295,7 @@ def stream_session_chat_events(
             )
 
         answer = "".join(full_answer)
+        cost_ms = round((time.perf_counter() - start_time) * 1000)
         update_message(
             db,
             assistant_message_id,
@@ -299,6 +304,19 @@ def stream_session_chat_events(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
+        )
+        create_call_log(
+            db,
+            call_type="session_stream_chat",
+            trace_id=trace_id,
+            session_id=session_id,
+            message_id=assistant_message_id,
+            model=settings.dashscope_model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            cost_ms=cost_ms,
+            status="success",
         )
 
         # 流式回答落库后，再按原有规则判断是否需要刷新会话摘要。
@@ -316,6 +334,9 @@ def stream_session_chat_events(
         )
     except Exception as exc:
         error_message = f"模型流式调用失败：{type(exc).__name__}"
+        cost_ms = None
+        if "start_time" in locals():
+            cost_ms = round((time.perf_counter() - start_time) * 1000)
 
         # 中途失败时优先保存已经输出的半截内容；没有半截内容才保存错误提示。
         partial_answer = "".join(full_answer)
@@ -332,6 +353,20 @@ def stream_session_chat_events(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
+            )
+            create_call_log(
+                db,
+                call_type="session_stream_chat",
+                trace_id=trace_id,
+                session_id=session_id,
+                message_id=assistant_message_id,
+                model=settings.dashscope_model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                cost_ms=cost_ms,
+                status="error",
+                error_message=error_message,
             )
 
         yield build_sse_event(

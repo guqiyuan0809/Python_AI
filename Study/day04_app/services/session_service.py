@@ -500,6 +500,7 @@ def build_messages(
     session_id: str,
     current_question: str,
     history_limit: int = 6,
+    exclude_latest_matching_user_message: bool = False,
 ) -> list[dict]:
     chat_session = get_session(db, session_id)
     latest_summary = get_latest_session_summary(db, session_id)
@@ -511,6 +512,14 @@ def build_messages(
         latest_summary=latest_summary,
         limit=history_limit,
     )
+
+    if exclude_latest_matching_user_message:
+        # 重试时旧用户问题可能已在历史中，移除最近一条同内容消息后再统一追加，避免重复提问。
+        for index in range(len(history) - 1, -1, -1):
+            item = history[index]
+            if item.role == "user" and item.content == current_question:
+                history.pop(index)
+                break
 
     # 第一条 system 消息用于定义模型角色和回答风格。
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]

@@ -69,3 +69,94 @@ class ChatSessionSummary(Base):
     # 摘要失败时记录错误信息，方便排查，不直接返回给普通用户。
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class AiCallLog(Base):
+    __tablename__ = "ai_call_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # 调用日志业务 ID，使用雪花 ID，适合后续跨服务追踪和对外查询。
+    call_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    # 一次请求链路 ID，Java 和 Python 之间通过 X-Trace-Id 透传。
+    trace_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    # 会话 ID，便于从某个会话反查本次模型调用。
+    session_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    # 本次调用关联的 assistant 消息 ID，便于从日志定位到最终展示给用户的回答。
+    message_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    # 调用来源，例如 session_chat、session_stream_chat、summary、title。
+    call_type: Mapped[str] = mapped_column(String(64), index=True)
+    model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 调用耗时，后续可以用于慢调用分析和模型性能监控。
+    cost_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="success")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class AiAsyncTask(Base):
+    __tablename__ = "ai_async_task"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # 异步任务业务 ID，前端或 Java 后端后续用它查询任务状态。
+    task_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    # 请求链路 ID，用于把提交任务和后台执行日志串起来。
+    trace_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    # 任务所属会话，当前先支持会话聊天异步执行。
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    # 任务最终关联的 assistant 消息 ID，任务完成后可定位到聊天记录。
+    message_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    # Celery 投递到 Broker 后产生的内部消息 ID，用于调度侧排查，不替代业务 task_id。
+    broker_task_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    # 任务类型，例如 session_chat，后续可以扩展 summary、rag_import、report_generate。
+    task_type: Mapped[str] = mapped_column(String(64), index=True)
+    # 用户本次提交的问题，方便任务排查和失败重试。
+    input_text: Mapped[str] = mapped_column(Text)
+    # AI 最终输出内容，任务成功后写入。
+    result_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # pending/running/success/error，用于前端轮询展示任务进度。
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    # 自动重试次数和最大重试次数，避免模型异常时无限消耗资源。
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    max_retries: Mapped[int] = mapped_column(Integer, default=3)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+        onupdate=datetime.now,
+    )
+
+
+class AiTaskOutbox(Base):
+    """任务投递事件表，用于解决 MySQL 与消息队列的双写一致性问题。"""
+
+    __tablename__ = "ai_task_outbox"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # 事件 ID 独立于 task_id，一次任务可以因自动重试产生多条投递事件。
+    event_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    task_id: Mapped[str] = mapped_column(String(64), index=True)
+    event_type: Mapped[str] = mapped_column(String(64), index=True)
+    # JSON 字符串，保存 Worker 执行任务所需的最小参数。
+    payload: Mapped[str] = mapped_column(Text)
+    # pending/published，发布失败后保持 pending，由 Beat 定时补偿。
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    publish_retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    # 自动重试时延迟到指定时间后再投递，避免故障期间高频空转。
+    available_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+        onupdate=datetime.now,
+    )

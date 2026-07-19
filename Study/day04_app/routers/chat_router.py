@@ -7,11 +7,18 @@
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+import time
 
 from day04_app.common.exceptions import ModelCallException
 from day04_app.common.response import ApiResponse, success
 from day04_app.database import get_db
 from day04_app.schemas.chat_schema import (
+    AiCallLogItem,
+    AiCallLogPageResponse,
+    AsyncSessionChatTaskRequest,
+    AsyncTaskStatusResponse,
+    AsyncTaskSubmitResponse,
+    AsyncTaskTimeoutScanResponse,
     ChatMessageItem,
     ChatRequest,
     ChatResponse,
@@ -27,6 +34,13 @@ from day04_app.schemas.chat_schema import (
     SessionTitleResponse,
     UpdateSessionTitleRequest,
 )
+from day04_app.services.async_task_service import (
+    create_async_session_chat_task,
+    get_async_task,
+    mark_timeout_tasks_error,
+    prepare_task_retry,
+)
+from day04_app.services.call_log_service import create_call_log, list_call_logs
 from day04_app.services.chat_service import (
     safe_chat,
     safe_chat_with_messages,
@@ -49,6 +63,7 @@ from day04_app.services.session_service import (
     update_message,
     update_session_title,
 )
+from day04_app.services.outbox_dispatcher import dispatch_outbox_event
 from settings import settings
 
 
@@ -82,6 +97,48 @@ def to_session_item(session) -> ChatSessionItem:
         status=session.status,
         created_at=session.created_at.isoformat(timespec="seconds"),
         updated_at=session.updated_at.isoformat(timespec="seconds"),
+    )
+
+
+def to_call_log_item(call_log) -> AiCallLogItem:
+    return AiCallLogItem(
+        call_id=call_log.call_id,
+        trace_id=call_log.trace_id,
+        session_id=call_log.session_id,
+        message_id=call_log.message_id,
+        call_type=call_log.call_type,
+        model=call_log.model,
+        prompt_tokens=call_log.prompt_tokens,
+        completion_tokens=call_log.completion_tokens,
+        total_tokens=call_log.total_tokens,
+        cost_ms=call_log.cost_ms,
+        status=call_log.status,
+        error_message=call_log.error_message,
+        created_at=call_log.created_at.isoformat(timespec="seconds"),
+    )
+
+
+def to_async_task_status(task) -> AsyncTaskStatusResponse:
+    return AsyncTaskStatusResponse(
+        task_id=task.task_id,
+        broker_task_id=task.broker_task_id,
+        trace_id=task.trace_id,
+        session_id=task.session_id,
+        message_id=task.message_id,
+        task_type=task.task_type,
+        status=task.status,
+        input_text=task.input_text,
+        result_text=task.result_text,
+        model=task.model,
+        prompt_tokens=task.prompt_tokens,
+        completion_tokens=task.completion_tokens,
+        total_tokens=task.total_tokens,
+        cost_ms=task.cost_ms,
+        retry_count=task.retry_count,
+        max_retries=task.max_retries,
+        error_message=task.error_message,
+        created_at=task.created_at.isoformat(timespec="seconds"),
+        updated_at=task.updated_at.isoformat(timespec="seconds"),
     )
 
 
@@ -330,9 +387,12 @@ def session_chat(
         status="pending",
     )
 
+    # 记录模型调用开始时间，后面用于统计本次 AI 调用耗时。
+    start_time = time.perf_counter()
     try:
         result = safe_chat_with_messages(messages)
     except ModelCallException as exc:
+        cost_ms = round((time.perf_counter() - start_time) * 1000)
         update_message(
             db,
             assistant_message.message_id,
@@ -340,8 +400,20 @@ def session_chat(
             status="error",
             error_message=exc.message,
         )
+        create_call_log(
+            db,
+            call_type="session_chat",
+            trace_id=trace_id,
+            session_id=request_body.session_id,
+            message_id=assistant_message.message_id,
+            model=settings.dashscope_model,
+            cost_ms=cost_ms,
+            status="error",
+            error_message=exc.message,
+        )
         raise
 
+    cost_ms = round((time.perf_counter() - start_time) * 1000)
     update_message(
         db,
         assistant_message.message_id,
@@ -351,9 +423,153 @@ def session_chat(
         completion_tokens=result.completion_tokens,
         total_tokens=result.total_tokens,
     )
+    create_call_log(
+        db,
+        call_type="session_chat",
+        trace_id=trace_id,
+        session_id=request_body.session_id,
+        message_id=assistant_message.message_id,
+        model=settings.dashscope_model,
+        prompt_tokens=result.prompt_tokens,
+        completion_tokens=result.completion_tokens,
+        total_tokens=result.total_tokens,
+        cost_ms=cost_ms,
+        status="success",
+    )
     if should_refresh_summary_for_session(db, request_body.session_id):
         refresh_session_summary(db, request_body.session_id)
     return success(result, trace_id=trace_id)
+
+
+@router.get(
+    "/call-logs",
+    response_model=ApiResponse[AiCallLogPageResponse],
+    summary="分页查询 AI 调用日志",
+)
+def list_ai_call_logs(
+    request: Request,
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    trace_id: str | None = Query(None, description="请求链路 ID，可选筛选条件"),
+    session_id: str | None = Query(None, description="会话 ID，可选筛选条件"),
+    status: str | None = Query(None, description="调用状态，例如 success/error"),
+    db: Session = Depends(get_db),
+) -> ApiResponse[AiCallLogPageResponse]:
+    # 调用日志属于运维和排查视角，支持按 trace_id、session_id、status 过滤。
+    call_logs, total = list_call_logs(
+        db,
+        page=page,
+        page_size=page_size,
+        trace_id=trace_id,
+        session_id=session_id,
+        status=status,
+    )
+    return success(
+        AiCallLogPageResponse(
+            total=total,
+            page=page,
+            page_size=page_size,
+            items=[to_call_log_item(call_log) for call_log in call_logs],
+        ),
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.post(
+    "/sessions/chat/async",
+    response_model=ApiResponse[AsyncTaskSubmitResponse],
+    summary="提交异步会话聊天任务",
+)
+def submit_async_session_chat(
+    request_body: AsyncSessionChatTaskRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[AsyncTaskSubmitResponse]:
+    trace_id = request.state.trace_id
+
+    # 先校验会话存在，再创建任务记录，避免后台任务拿到无效 session_id。
+    get_session(db, request_body.session_id)
+    task, outbox_event = create_async_session_chat_task(
+        db,
+        session_id=request_body.session_id,
+        input_text=request_body.message,
+        trace_id=trace_id,
+        model=settings.dashscope_model,
+        history_limit=request_body.history_limit,
+        max_retries=settings.async_task_max_retries,
+    )
+    # Broker 暂时不可用时事件会留在 Outbox，Celery Beat 后续会自动补发。
+    dispatch_outbox_event(db, outbox_event.event_id)
+    return success(
+        AsyncTaskSubmitResponse(
+            task_id=task.task_id,
+            status=task.status,
+        ),
+        message="异步任务已提交",
+        trace_id=trace_id,
+    )
+
+
+@router.post(
+    "/tasks/actions/timeout-scan",
+    response_model=ApiResponse[AsyncTaskTimeoutScanResponse],
+    summary="扫描并标记超时异步任务",
+)
+def scan_timeout_async_tasks(
+    request: Request,
+    timeout_minutes: int = Query(10, ge=1, le=1440, description="任务超时分钟数"),
+    db: Session = Depends(get_db),
+) -> ApiResponse[AsyncTaskTimeoutScanResponse]:
+    # 学习阶段通过接口手动触发；企业项目通常由定时任务或独立 Worker 定期执行。
+    timeout_tasks = mark_timeout_tasks_error(db, timeout_minutes=timeout_minutes)
+    return success(
+        AsyncTaskTimeoutScanResponse(
+            timeout_count=len(timeout_tasks),
+            task_ids=[task.task_id for task in timeout_tasks],
+        ),
+        message="超时任务扫描完成",
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.get(
+    "/tasks/{task_id}",
+    response_model=ApiResponse[AsyncTaskStatusResponse],
+    summary="查询异步任务状态",
+)
+def get_async_task_status(
+    task_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[AsyncTaskStatusResponse]:
+    task = get_async_task(db, task_id)
+    return success(
+        to_async_task_status(task),
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.post(
+    "/tasks/{task_id}/retry",
+    response_model=ApiResponse[AsyncTaskSubmitResponse],
+    summary="重试失败的异步任务",
+)
+def retry_async_task(
+    task_id: str,
+    request: Request,
+    history_limit: int = Query(6, ge=0, le=20, description="重试时携带的历史消息数量"),
+    db: Session = Depends(get_db),
+) -> ApiResponse[AsyncTaskSubmitResponse]:
+    task, outbox_event = prepare_task_retry(db, task_id, history_limit=history_limit)
+    dispatch_outbox_event(db, outbox_event.event_id)
+    return success(
+        AsyncTaskSubmitResponse(
+            task_id=task.task_id,
+            status=task.status,
+        ),
+        message="异步任务已重新提交",
+        trace_id=request.state.trace_id,
+    )
 
 
 @router.post("/stream", summary="普通流式聊天")

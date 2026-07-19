@@ -32,12 +32,23 @@ class Settings(BaseSettings):
     db_password: str
     db_name: str = "PythonAi"
 
+    # RabbitMQ 承担真正的消息 Broker；任务结果统一落 MySQL，不再依赖 Celery result backend。
+    rabbitmq_url: str = "amqp://python_ai:python_ai_123@127.0.0.1:5672//"
+    celery_broker_url: str | None = None
+    async_task_timeout_minutes: int = 10
+    async_task_max_retries: int = 3
+
     @property
     def database_url(self) -> str:
         return (
             f"mysql+pymysql://{self.db_user}:{self.db_password}"
             f"@{self.db_host}:{self.db_port}/{self.db_name}?charset=utf8mb4"
         )
+
+    @property
+    def celery_broker(self) -> str:
+        # 没有单独配置时，开发环境默认使用 RabbitMQ，贴近 Java 企业 MQ 场景。
+        return self.celery_broker_url or self.rabbitmq_url
 
     model_config = SettingsConfigDict(
         env_file=ENV_PATH,

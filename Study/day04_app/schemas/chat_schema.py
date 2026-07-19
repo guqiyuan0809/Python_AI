@@ -106,3 +106,64 @@ class SessionMessagesPageResponse(BaseModel):
     page: int
     page_size: int
     messages: list[ChatMessageItem]
+
+
+class AiCallLogItem(BaseModel):
+    call_id: str
+    trace_id: str | None = None
+    session_id: str | None = None
+    message_id: str | None = None
+    call_type: str
+    model: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    cost_ms: int | None = None
+    status: str
+    error_message: str | None = None
+    created_at: str
+
+
+class AiCallLogPageResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[AiCallLogItem]
+
+
+class AsyncSessionChatTaskRequest(BaseModel):
+    session_id: str = Field(..., min_length=1, description="会话 ID")
+    message: str = Field(..., min_length=1, description="用户输入的问题")
+    history_limit: int = Field(6, ge=0, le=20, description="携带最近多少条历史消息")
+
+
+class AsyncTaskSubmitResponse(BaseModel):
+    task_id: str
+    status: str
+
+
+class AsyncTaskStatusResponse(BaseModel):
+    task_id: str
+    broker_task_id: str | None = None
+    trace_id: str | None = None
+    session_id: str
+    message_id: str | None = None
+    task_type: str
+    status: str
+    input_text: str
+    result_text: str | None = None
+    model: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    cost_ms: int | None = None
+    retry_count: int
+    max_retries: int
+    error_message: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class AsyncTaskTimeoutScanResponse(BaseModel):
+    timeout_count: int
+    task_ids: list[str]
