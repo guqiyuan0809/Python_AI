@@ -160,3 +160,34 @@ class AiTaskOutbox(Base):
         default=datetime.now,
         onupdate=datetime.now,
     )
+
+
+class AiStructuredResult(Base):
+    """AI 结构化结果表，用于持久化模型生成的标准 JSON 业务结果。"""
+
+    __tablename__ = "ai_structured_result"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # 结构化结果业务 ID，前端/Java 可以通过它定位一份标准 JSON 结果。
+    result_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    # 异步任务 ID；同步测试接口可以为空，后续接入 Worker 后会关联 ai_async_task.task_id。
+    task_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    trace_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    session_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    message_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    # 业务归属，例如 work_order、contract、jingtangling_audit。
+    business_type: Mapped[str] = mapped_column(String(64), index=True)
+    business_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    # 结构化结果类型和版本，方便后续 prompt/DTO 升级时做兼容。
+    schema_type: Mapped[str] = mapped_column(String(64), index=True)
+    schema_version: Mapped[str] = mapped_column(String(32), default="v1")
+    # 保存标准 JSON 字符串；查询接口再反序列化成前端可直接消费的对象。
+    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="success", index=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+        onupdate=datetime.now,
+    )

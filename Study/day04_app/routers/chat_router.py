@@ -15,6 +15,7 @@ from day04_app.database import get_db
 from day04_app.schemas.chat_schema import (
     AiCallLogItem,
     AiCallLogPageResponse,
+    AsyncWorkOrderAnalysisTaskRequest,
     AsyncSessionChatTaskRequest,
     AsyncTaskStatusResponse,
     AsyncTaskSubmitResponse,
@@ -33,15 +34,19 @@ from day04_app.schemas.chat_schema import (
     SessionStreamChatRequest,
     SessionTitleResponse,
     UpdateSessionTitleRequest,
+    WorkOrderAnalysisRequest,
+    WorkOrderAnalysisResponse,
 )
 from day04_app.services.async_task_service import (
     create_async_session_chat_task,
+    create_async_work_order_analysis_task,
     get_async_task,
     mark_timeout_tasks_error,
     prepare_task_retry,
 )
 from day04_app.services.call_log_service import create_call_log, list_call_logs
 from day04_app.services.chat_service import (
+    analyze_work_order_structured,
     safe_chat,
     safe_chat_with_messages,
     stream_chat_events,
@@ -64,6 +69,8 @@ from day04_app.services.session_service import (
     update_session_title,
 )
 from day04_app.services.outbox_dispatcher import dispatch_outbox_event
+from day04_app.services.structured_result_service import create_structured_result
+from day04_app.services.structured_result_service import get_structured_result_by_task_id, load_result_json
 from settings import settings
 
 
@@ -118,7 +125,7 @@ def to_call_log_item(call_log) -> AiCallLogItem:
     )
 
 
-def to_async_task_status(task) -> AsyncTaskStatusResponse:
+def to_async_task_status(task, structured_result: dict | None = None) -> AsyncTaskStatusResponse:
     return AsyncTaskStatusResponse(
         task_id=task.task_id,
         broker_task_id=task.broker_task_id,
@@ -129,6 +136,7 @@ def to_async_task_status(task) -> AsyncTaskStatusResponse:
         status=task.status,
         input_text=task.input_text,
         result_text=task.result_text,
+        structured_result=structured_result,
         model=task.model,
         prompt_tokens=task.prompt_tokens,
         completion_tokens=task.completion_tokens,
@@ -146,6 +154,61 @@ def to_async_task_status(task) -> AsyncTaskStatusResponse:
 def chat(request_body: ChatRequest, request: Request) -> ApiResponse[ChatResponse]:
     result = safe_chat(request_body.message)
     return success(result, trace_id=request.state.trace_id)
+
+
+@router.post(
+    "/structured/work-order/analyze",
+    response_model=ApiResponse[WorkOrderAnalysisResponse],
+    summary="结构化分析工单内容",
+)
+def analyze_work_order(
+    request_body: WorkOrderAnalysisRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[WorkOrderAnalysisResponse]:
+    trace_id = request.state.trace_id
+    start_time = time.perf_counter()
+    try:
+        # Day14 当前只验证“模型输出 JSON + Pydantic 校验”，暂时不走异步任务。
+        result = analyze_work_order_structured(request_body.content)
+    except ModelCallException as exc:
+        cost_ms = round((time.perf_counter() - start_time) * 1000)
+        create_call_log(
+            db,
+            call_type="structured_work_order_analyze",
+            trace_id=trace_id,
+            model=settings.dashscope_model,
+            cost_ms=cost_ms,
+            status="error",
+            error_message=exc.message,
+        )
+        raise
+
+    cost_ms = round((time.perf_counter() - start_time) * 1000)
+    structured_result = create_structured_result(
+        db,
+        business_type="work_order",
+        business_id=request_body.business_id,
+        schema_type="work_order_analysis",
+        schema_version="v1",
+        result_data=result.analysis.model_dump(),
+        trace_id=trace_id,
+        session_id=request_body.session_id,
+        status="success",
+    )
+    result.result_id = structured_result.result_id
+    create_call_log(
+        db,
+        call_type="structured_work_order_analyze",
+        trace_id=trace_id,
+        model=settings.dashscope_model,
+        prompt_tokens=result.prompt_tokens,
+        completion_tokens=result.completion_tokens,
+        total_tokens=result.total_tokens,
+        cost_ms=cost_ms,
+        status="success",
+    )
+    return success(result, trace_id=trace_id)
 
 
 @router.post(
@@ -511,6 +574,40 @@ def submit_async_session_chat(
 
 
 @router.post(
+    "/structured/work-order/analyze/async",
+    response_model=ApiResponse[AsyncTaskSubmitResponse],
+    summary="提交异步工单结构化分析任务",
+)
+def submit_async_work_order_analysis(
+    request_body: AsyncWorkOrderAnalysisTaskRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[AsyncTaskSubmitResponse]:
+    trace_id = request.state.trace_id
+
+    # 结构化分析异步任务也必须归属会话，方便后续查询聊天历史和审计。
+    get_session(db, request_body.session_id)
+    task, outbox_event = create_async_work_order_analysis_task(
+        db,
+        session_id=request_body.session_id,
+        content=request_body.content,
+        trace_id=trace_id,
+        model=settings.dashscope_model,
+        business_id=request_body.business_id,
+        max_retries=settings.async_task_max_retries,
+    )
+    dispatch_outbox_event(db, outbox_event.event_id)
+    return success(
+        AsyncTaskSubmitResponse(
+            task_id=task.task_id,
+            status=task.status,
+        ),
+        message="异步结构化分析任务已提交",
+        trace_id=trace_id,
+    )
+
+
+@router.post(
     "/tasks/actions/timeout-scan",
     response_model=ApiResponse[AsyncTaskTimeoutScanResponse],
     summary="扫描并标记超时异步任务",
@@ -543,8 +640,12 @@ def get_async_task_status(
     db: Session = Depends(get_db),
 ) -> ApiResponse[AsyncTaskStatusResponse]:
     task = get_async_task(db, task_id)
+    structured_result_json = None
+    if task.status == "success" and task.task_type == "work_order_analysis":
+        structured_result = get_structured_result_by_task_id(db, task_id)
+        structured_result_json = load_result_json(structured_result)
     return success(
-        to_async_task_status(task),
+        to_async_task_status(task, structured_result=structured_result_json),
         trace_id=request.state.trace_id,
     )
 

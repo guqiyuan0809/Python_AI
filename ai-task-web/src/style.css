@@ -1,0 +1,64 @@
+:root {
+  font-family: Inter, "Microsoft YaHei", "Segoe UI", sans-serif;
+  color: #1f2937;
+  background: #f3f6fb;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 22px 7vw;
+  color: #fff;
+  background: linear-gradient(120deg, #172554, #2563eb);
+}
+
+.app-header h1 {
+  margin: 4px 0 0;
+  font-size: 24px;
+}
+
+.eyebrow {
+  margin: 0;
+  color: #bfdbfe;
+  font-size: 12px;
+  letter-spacing: 1.8px;
+}
+
+.app-nav a {
+  color: #dbeafe;
+  text-decoration: none;
+}
+
+.app-nav a.router-link-active {
+  color: #fff;
+  font-weight: 700;
+}
+
+.app-main {
+  width: min(1120px, 92vw);
+  margin: 0 auto;
+  padding: 36px 0 64px;
+}

@@ -4,6 +4,8 @@
 类似 Java 项目里的 DTO / VO。
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -28,6 +30,36 @@ class ChatResponse(BaseModel):
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
+
+
+class WorkOrderAnalysisRequest(BaseModel):
+    content: str = Field(..., min_length=1, max_length=2000, description="需要 AI 分析的工单或业务问题内容")
+    session_id: str | None = Field(None, min_length=1, description="可选会话 ID，用于把结构化结果归属到某次会话")
+    business_id: str | None = Field(None, min_length=1, description="可选业务 ID，例如工单 ID")
+
+
+class AsyncWorkOrderAnalysisTaskRequest(BaseModel):
+    session_id: str = Field(..., min_length=1, description="会话 ID")
+    content: str = Field(..., min_length=1, max_length=2000, description="需要 AI 分析的工单或业务问题内容")
+    business_id: str | None = Field(None, min_length=1, description="可选业务 ID，例如工单 ID")
+
+
+class WorkOrderAnalysisResult(BaseModel):
+    category: Literal["consult", "complaint", "repair", "other"] = Field(..., description="问题分类")
+    risk_level: Literal["low", "medium", "high"] = Field(..., description="风险等级")
+    summary: str = Field(..., min_length=1, max_length=200, description="问题摘要")
+    suggestions: list[str] = Field(..., min_length=1, max_length=5, description="处理建议")
+    need_human_review: bool = Field(..., description="是否需要人工复核")
+    confidence: float = Field(..., ge=0, le=1, description="模型对分析结果的置信度")
+
+
+class WorkOrderAnalysisResponse(BaseModel):
+    result_id: str | None = None
+    analysis: WorkOrderAnalysisResult
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    repair_count: int = Field(0, ge=0, description="结构化输出修复次数")
 
 
 class CreateSessionResponse(BaseModel):
@@ -152,6 +184,7 @@ class AsyncTaskStatusResponse(BaseModel):
     status: str
     input_text: str
     result_text: str | None = None
+    structured_result: dict | None = None
     model: str | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None

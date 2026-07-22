@@ -10,9 +10,10 @@ from collections.abc import Iterator
 from uuid import uuid4
 
 from openai import OpenAI
+from pydantic import ValidationError
 
 from day04_app.common.exceptions import ModelCallException
-from day04_app.schemas.chat_schema import ChatResponse
+from day04_app.schemas.chat_schema import ChatResponse, WorkOrderAnalysisResponse, WorkOrderAnalysisResult
 from settings import settings
 
 
@@ -50,6 +51,116 @@ def safe_chat_with_messages(messages: list[dict]) -> ChatResponse:
         )
     except Exception as exc:
         raise ModelCallException(message=f"模型调用失败：{type(exc).__name__}") from exc
+
+
+def analyze_work_order_structured(content: str) -> WorkOrderAnalysisResponse:
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是企业工单分析助手。你必须只输出一个合法 JSON 对象，不能输出 Markdown、解释或多余文本。"
+                "category 只能是 consult、complaint、repair、other；"
+                "risk_level 只能是 low、medium、high；"
+                "suggestions 必须是 1 到 5 条中文处理建议。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "请分析下面的工单内容，并严格按这个 JSON 结构返回：\n"
+                "{\n"
+                '  "category": "consult|complaint|repair|other",\n'
+                '  "risk_level": "low|medium|high",\n'
+                '  "summary": "200字以内的问题摘要",\n'
+                '  "suggestions": ["处理建议1", "处理建议2"],\n'
+                '  "need_human_review": true,\n'
+                '  "confidence": 0.85\n'
+                "}\n\n"
+                f"工单内容：{content}"
+            ),
+        },
+    ]
+
+    client = create_client(timeout=30.0)
+    try:
+        response = call_chat_completion(client, messages)
+        raw_text = response.choices[0].message.content or ""
+        try:
+            # 模型本质仍返回字符串；这里先抽取 JSON 对象，再交给 Pydantic 做强类型校验。
+            analysis = parse_work_order_analysis(raw_text)
+            repair_count = 0
+            prompt_tokens = response.usage.prompt_tokens
+            completion_tokens = response.usage.completion_tokens
+            total_tokens = response.usage.total_tokens
+        except (ValidationError, json.JSONDecodeError) as exc:
+            # 首次输出不合格时，只允许走一次修复，避免模型格式异常导致接口无限重试。
+            repair_response = repair_work_order_analysis_output(client, raw_text, str(exc))
+            analysis = parse_work_order_analysis(repair_response.choices[0].message.content or "")
+            repair_count = 1
+            prompt_tokens = response.usage.prompt_tokens + repair_response.usage.prompt_tokens
+            completion_tokens = response.usage.completion_tokens + repair_response.usage.completion_tokens
+            total_tokens = response.usage.total_tokens + repair_response.usage.total_tokens
+        return WorkOrderAnalysisResponse(
+            analysis=analysis,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            repair_count=repair_count,
+        )
+    except ValidationError as exc:
+        raise ModelCallException(message=f"模型结构化输出字段不合法：{exc.errors()[0]['msg']}") from exc
+    except json.JSONDecodeError as exc:
+        raise ModelCallException(message="模型结构化输出不是合法 JSON") from exc
+    except ModelCallException:
+        raise
+    except Exception as exc:
+        raise ModelCallException(message=f"模型结构化分析失败：{type(exc).__name__}") from exc
+
+
+def call_chat_completion(client: OpenAI, messages: list[dict]):
+    return client.chat.completions.create(
+        model=settings.dashscope_model,
+        messages=messages,
+        temperature=0.1,
+        max_tokens=600,
+    )
+
+
+def parse_work_order_analysis(raw_text: str) -> WorkOrderAnalysisResult:
+    json_text = extract_json_object(raw_text)
+    return WorkOrderAnalysisResult.model_validate_json(json_text)
+
+
+def repair_work_order_analysis_output(client: OpenAI, raw_text: str, error_message: str):
+    repair_messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是 JSON 修复器。你只能输出一个合法 JSON 对象，不能输出解释、Markdown 或代码块。"
+                "必须严格符合字段：category、risk_level、summary、suggestions、need_human_review、confidence。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "下面是上一次模型输出和校验错误，请修复为合法 JSON。\n"
+                "枚举限制：category=consult|complaint|repair|other，risk_level=low|medium|high。\n"
+                "confidence 必须是 0 到 1 之间的数字，suggestions 必须是 1 到 5 条中文建议。\n\n"
+                f"校验错误：{error_message}\n\n"
+                f"上一次输出：\n{raw_text}"
+            ),
+        },
+    ]
+    return call_chat_completion(client, repair_messages)
+
+
+def extract_json_object(raw_text: str) -> str:
+    stripped_text = raw_text.strip()
+    start_index = stripped_text.find("{")
+    end_index = stripped_text.rfind("}")
+    if start_index < 0 or end_index < start_index:
+        raise json.JSONDecodeError("未找到 JSON 对象", stripped_text, 0)
+    return stripped_text[start_index : end_index + 1]
 
 
 def summarize_messages_with_model(history_text: str) -> str:
