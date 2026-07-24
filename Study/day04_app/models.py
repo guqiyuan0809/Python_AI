@@ -6,7 +6,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, String, Text
+from sqlalchemy import DateTime, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from day04_app.database import Base
@@ -44,6 +44,7 @@ class ChatMessage(Base):
     completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="success")
+    error_type: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
@@ -92,6 +93,7 @@ class AiCallLog(Base):
     # 调用耗时，后续可以用于慢调用分析和模型性能监控。
     cost_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="success")
+    error_type: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
@@ -126,6 +128,7 @@ class AiAsyncTask(Base):
     # 自动重试次数和最大重试次数，避免模型异常时无限消耗资源。
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
     max_retries: Mapped[int] = mapped_column(Integer, default=3)
+    error_type: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(
@@ -191,3 +194,142 @@ class AiStructuredResult(Base):
         default=datetime.now,
         onupdate=datetime.now,
     )
+
+
+class AiFailureSample(Base):
+    """AI 失败样本表，用于沉淀 prompt 优化和 harness 评测数据。"""
+
+    __tablename__ = "ai_failure_sample"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # 失败样本业务 ID，后续可以进入评测数据集或管理后台。
+    sample_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    trace_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    task_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    session_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    message_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    call_type: Mapped[str] = mapped_column(String(64), index=True)
+    model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    schema_type: Mapped[str] = mapped_column(String(64), index=True)
+    schema_version: Mapped[str] = mapped_column(String(32), index=True)
+    error_type: Mapped[str] = mapped_column(String(64), index=True)
+    error_message: Mapped[str] = mapped_column(Text)
+    raw_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    validation_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class AiPromptVersion(Base):
+    """AI Prompt 版本表，用于保存每个业务场景下的 prompt 内容和模型参数。"""
+
+    __tablename__ = "ai_prompt_version"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    prompt_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    prompt_name: Mapped[str] = mapped_column(String(64), index=True)
+    prompt_version: Mapped[str] = mapped_column(String(32), index=True)
+    description: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    system_prompt: Mapped[str] = mapped_column(Text)
+    user_prompt_template: Mapped[str] = mapped_column(Text)
+    model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+        onupdate=datetime.now,
+    )
+
+
+class AiEvalDataset(Base):
+    """AI 评测数据集表，用于保存某个业务评测集合的版本信息。"""
+
+    __tablename__ = "ai_eval_dataset"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    dataset_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    dataset_name: Mapped[str] = mapped_column(String(64), index=True)
+    dataset_version: Mapped[str] = mapped_column(String(64), index=True)
+    description: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+        onupdate=datetime.now,
+    )
+
+
+class AiEvalSample(Base):
+    """AI 评测样本表，用于保存人工标注后的标准输入和期望输出。"""
+
+    __tablename__ = "ai_eval_sample"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sample_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    dataset_id: Mapped[str] = mapped_column(String(64), index=True)
+    dataset_version: Mapped[str] = mapped_column(String(64), index=True)
+    sample_type: Mapped[str] = mapped_column(String(32), default="normal", index=True)
+    input_text: Mapped[str] = mapped_column(Text)
+    expected_json: Mapped[str] = mapped_column(Text)
+    source_type: Mapped[str] = mapped_column(String(32), default="manual", index=True)
+    source_ref_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+        onupdate=datetime.now,
+    )
+
+
+class AiEvalRun(Base):
+    """AI 评测运行表，用于记录一次 prompt harness 的汇总结果。"""
+
+    __tablename__ = "ai_eval_run"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # 一次评测运行的业务 ID，类似 Java 里给批处理任务生成的 runId。
+    run_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    prompt_name: Mapped[str] = mapped_column(String(64), index=True)
+    prompt_version: Mapped[str] = mapped_column(String(32), index=True)
+    dataset_version: Mapped[str] = mapped_column(String(64), index=True)
+    sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    schema_valid_rate: Mapped[float] = mapped_column(Float, default=0)
+    category_accuracy: Mapped[float] = mapped_column(Float, default=0)
+    risk_level_accuracy: Mapped[float] = mapped_column(Float, default=0)
+    human_review_accuracy: Mapped[float] = mapped_column(Float, default=0)
+    avg_total_tokens: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_cost_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 保存完整指标 JSON，后续增加新指标时不需要立刻改表。
+    metrics_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class AiEvalCaseResult(Base):
+    """AI 评测样本结果表，用于记录一次评测中每条样本的 actual/expected 对比。"""
+
+    __tablename__ = "ai_eval_case_result"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
+    sample_id: Mapped[str] = mapped_column(String(64), index=True)
+    schema_valid: Mapped[int] = mapped_column(Integer, default=0)
+    category_match: Mapped[int] = mapped_column(Integer, default=0)
+    risk_level_match: Mapped[int] = mapped_column(Integer, default=0)
+    human_review_match: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_type: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expected_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    actual_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 保存整行结果，方便后续扩展更多评测字段，不破坏历史数据。
+    row_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)

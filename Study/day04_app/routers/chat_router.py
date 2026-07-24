@@ -6,7 +6,9 @@
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
+import json
 import time
 
 from day04_app.common.exceptions import ModelCallException
@@ -15,6 +17,8 @@ from day04_app.database import get_db
 from day04_app.schemas.chat_schema import (
     AiCallLogItem,
     AiCallLogPageResponse,
+    AiFailureSampleItem,
+    AiFailureSamplePageResponse,
     AsyncWorkOrderAnalysisTaskRequest,
     AsyncSessionChatTaskRequest,
     AsyncTaskStatusResponse,
@@ -35,6 +39,7 @@ from day04_app.schemas.chat_schema import (
     SessionTitleResponse,
     UpdateSessionTitleRequest,
     WorkOrderAnalysisRequest,
+    WorkOrderAnalysisParseTestRequest,
     WorkOrderAnalysisResponse,
 )
 from day04_app.services.async_task_service import (
@@ -45,8 +50,10 @@ from day04_app.services.async_task_service import (
     prepare_task_retry,
 )
 from day04_app.services.call_log_service import create_call_log, list_call_logs
+from day04_app.services.failure_sample_service import create_failure_sample, list_failure_samples
 from day04_app.services.chat_service import (
     analyze_work_order_structured,
+    parse_work_order_analysis,
     safe_chat,
     safe_chat_with_messages,
     stream_chat_events,
@@ -71,6 +78,10 @@ from day04_app.services.session_service import (
 from day04_app.services.outbox_dispatcher import dispatch_outbox_event
 from day04_app.services.structured_result_service import create_structured_result
 from day04_app.services.structured_result_service import get_structured_result_by_task_id, load_result_json
+from day04_app.common.exceptions import (
+    ERROR_TYPE_STRUCTURED_FIELD_INVALID,
+    ERROR_TYPE_STRUCTURED_JSON_INVALID,
+)
 from settings import settings
 
 
@@ -90,6 +101,7 @@ def to_message_item(message) -> ChatMessageItem:
         completion_tokens=message.completion_tokens,
         total_tokens=message.total_tokens,
         status=message.status,
+        error_type=message.error_type,
         error_message=message.error_message,
         created_at=message.created_at.isoformat(timespec="seconds"),
     )
@@ -120,8 +132,28 @@ def to_call_log_item(call_log) -> AiCallLogItem:
         total_tokens=call_log.total_tokens,
         cost_ms=call_log.cost_ms,
         status=call_log.status,
+        error_type=call_log.error_type,
         error_message=call_log.error_message,
         created_at=call_log.created_at.isoformat(timespec="seconds"),
+    )
+
+
+def to_failure_sample_item(sample) -> AiFailureSampleItem:
+    return AiFailureSampleItem(
+        sample_id=sample.sample_id,
+        trace_id=sample.trace_id,
+        task_id=sample.task_id,
+        session_id=sample.session_id,
+        message_id=sample.message_id,
+        call_type=sample.call_type,
+        model=sample.model,
+        schema_type=sample.schema_type,
+        schema_version=sample.schema_version,
+        error_type=sample.error_type,
+        error_message=sample.error_message,
+        raw_text=sample.raw_text,
+        validation_error=sample.validation_error,
+        created_at=sample.created_at.isoformat(timespec="seconds"),
     )
 
 
@@ -144,6 +176,7 @@ def to_async_task_status(task, structured_result: dict | None = None) -> AsyncTa
         cost_ms=task.cost_ms,
         retry_count=task.retry_count,
         max_retries=task.max_retries,
+        error_type=task.error_type,
         error_message=task.error_message,
         created_at=task.created_at.isoformat(timespec="seconds"),
         updated_at=task.updated_at.isoformat(timespec="seconds"),
@@ -180,6 +213,7 @@ def analyze_work_order(
             model=settings.dashscope_model,
             cost_ms=cost_ms,
             status="error",
+            error_type=exc.error_type,
             error_message=exc.message,
         )
         raise
@@ -209,6 +243,121 @@ def analyze_work_order(
         status="success",
     )
     return success(result, trace_id=trace_id)
+
+
+@router.post(
+    "/structured/work-order/parse-test",
+    response_model=ApiResponse[WorkOrderAnalysisResponse],
+    summary="测试结构化输出解析与错误类型",
+)
+def parse_work_order_analysis_test(
+    request_body: WorkOrderAnalysisParseTestRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[WorkOrderAnalysisResponse]:
+    trace_id = request.state.trace_id
+    try:
+        # 这个接口不调模型，只模拟“模型原始输出 -> DTO 校验”，方便稳定验证 error_type。
+        analysis = parse_work_order_analysis(request_body.raw_text)
+    except ValidationError as exc:
+        error_message = f"模型结构化输出字段不合法：{exc.errors()[0]['msg']}"
+        validation_error = json.dumps(exc.errors(), ensure_ascii=False)
+        create_call_log(
+            db,
+            call_type="structured_work_order_parse_test",
+            trace_id=trace_id,
+            model=settings.dashscope_model,
+            status="error",
+            error_type=ERROR_TYPE_STRUCTURED_FIELD_INVALID,
+            error_message=error_message,
+        )
+        create_failure_sample(
+            db,
+            call_type="structured_work_order_parse_test",
+            schema_type="work_order_analysis",
+            schema_version="v1",
+            error_type=ERROR_TYPE_STRUCTURED_FIELD_INVALID,
+            error_message=error_message,
+            raw_text=request_body.raw_text,
+            validation_error=validation_error,
+            trace_id=trace_id,
+            model=settings.dashscope_model,
+        )
+        raise ModelCallException(
+            message=error_message,
+            error_type=ERROR_TYPE_STRUCTURED_FIELD_INVALID,
+        ) from exc
+    except json.JSONDecodeError as exc:
+        error_message = "模型结构化输出不是合法 JSON"
+        validation_error = str(exc)
+        create_call_log(
+            db,
+            call_type="structured_work_order_parse_test",
+            trace_id=trace_id,
+            model=settings.dashscope_model,
+            status="error",
+            error_type=ERROR_TYPE_STRUCTURED_JSON_INVALID,
+            error_message=error_message,
+        )
+        create_failure_sample(
+            db,
+            call_type="structured_work_order_parse_test",
+            schema_type="work_order_analysis",
+            schema_version="v1",
+            error_type=ERROR_TYPE_STRUCTURED_JSON_INVALID,
+            error_message=error_message,
+            raw_text=request_body.raw_text,
+            validation_error=validation_error,
+            trace_id=trace_id,
+            model=settings.dashscope_model,
+        )
+        raise ModelCallException(
+            message=error_message,
+            error_type=ERROR_TYPE_STRUCTURED_JSON_INVALID,
+        ) from exc
+
+    return success(
+        WorkOrderAnalysisResponse(
+            analysis=analysis,
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+        ),
+        trace_id=trace_id,
+    )
+
+
+@router.get(
+    "/failure-samples",
+    response_model=ApiResponse[AiFailureSamplePageResponse],
+    summary="分页查询 AI 失败样本",
+)
+def list_ai_failure_samples(
+    request: Request,
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    trace_id: str | None = Query(None, description="请求链路 ID，可选筛选条件"),
+    schema_type: str | None = Query(None, description="结构化结果类型，例如 work_order_analysis"),
+    error_type: str | None = Query(None, description="错误类型，例如 STRUCTURED_JSON_INVALID"),
+    db: Session = Depends(get_db),
+) -> ApiResponse[AiFailureSamplePageResponse]:
+    samples, total = list_failure_samples(
+        db,
+        page=page,
+        page_size=page_size,
+        trace_id=trace_id,
+        schema_type=schema_type,
+        error_type=error_type,
+    )
+    return success(
+        AiFailureSamplePageResponse(
+            total=total,
+            page=page,
+            page_size=page_size,
+            items=[to_failure_sample_item(sample) for sample in samples],
+        ),
+        trace_id=request.state.trace_id,
+    )
 
 
 @router.post(
@@ -472,6 +621,7 @@ def session_chat(
             model=settings.dashscope_model,
             cost_ms=cost_ms,
             status="error",
+            error_type=exc.error_type,
             error_message=exc.message,
         )
         raise
@@ -516,6 +666,7 @@ def list_ai_call_logs(
     trace_id: str | None = Query(None, description="请求链路 ID，可选筛选条件"),
     session_id: str | None = Query(None, description="会话 ID，可选筛选条件"),
     status: str | None = Query(None, description="调用状态，例如 success/error"),
+    error_type: str | None = Query(None, description="错误类型，例如 MODEL_CALL_FAILED"),
     db: Session = Depends(get_db),
 ) -> ApiResponse[AiCallLogPageResponse]:
     # 调用日志属于运维和排查视角，支持按 trace_id、session_id、status 过滤。
@@ -526,6 +677,7 @@ def list_ai_call_logs(
         trace_id=trace_id,
         session_id=session_id,
         status=status,
+        error_type=error_type,
     )
     return success(
         AiCallLogPageResponse(

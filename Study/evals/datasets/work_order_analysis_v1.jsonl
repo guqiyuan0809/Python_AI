@@ -1,0 +1,5 @@
+{"sample_id":"wo_eval_001","input":"游客咨询景区今天几点闭园，是否还能购买夜场票。","expected":{"category":"consult","risk_level":"low","need_human_review":false}}
+{"sample_id":"wo_eval_002","input":"游客投诉3号停车场出口拥堵严重，现场已经发生争吵，要求工作人员马上处理并给出解释。","expected":{"category":"complaint","risk_level":"high","need_human_review":true}}
+{"sample_id":"wo_eval_003","input":"东门闸机扫码后无法通行，多名游客排队等待，现场工作人员暂时无法恢复。","expected":{"category":"repair","risk_level":"medium","need_human_review":true}}
+{"sample_id":"wo_eval_004","input":"游客反馈卫生间异味较重，希望安排保洁处理，没有发生争执。","expected":{"category":"complaint","risk_level":"medium","need_human_review":true}}
+{"sample_id":"wo_eval_005","input":"用户只发送了“帮我看看这个问题”，没有提供具体业务内容。","expected":{"category":"other","risk_level":"low","need_human_review":true}}

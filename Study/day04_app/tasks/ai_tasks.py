@@ -4,7 +4,7 @@ import logging
 import time
 
 from day04_app.celery_app import celery_app
-from day04_app.common.exceptions import ModelCallException
+from day04_app.common.exceptions import ERROR_TYPE_WORKER_EXECUTION_ERROR, ModelCallException
 from day04_app.database import SessionLocal
 from day04_app.services.async_task_service import (
     bind_task_message,
@@ -131,9 +131,10 @@ def execute_session_chat_task(
             model=settings.dashscope_model,
             cost_ms=cost_ms,
             status="error",
+            error_type=exc.error_type,
             error_message=error_message,
         )
-        failed_task = mark_task_error(db, task_id, error_message, cost_ms)
+        failed_task = mark_task_error(db, task_id, error_message, cost_ms, error_type=exc.error_type)
         if failed_task and failed_task.retry_count < failed_task.max_retries:
             # 指数退避：第 1 次 5 秒、第 2 次 10 秒，最大等待 5 分钟。
             delay_seconds = min(300, 5 * (2 ** failed_task.retry_count))
@@ -171,9 +172,10 @@ def execute_session_chat_task(
             model=settings.dashscope_model,
             cost_ms=cost_ms,
             status="error",
+            error_type=ERROR_TYPE_WORKER_EXECUTION_ERROR,
             error_message=error_message,
         )
-        mark_task_error(db, task_id, error_message, cost_ms)
+        mark_task_error(db, task_id, error_message, cost_ms, error_type=ERROR_TYPE_WORKER_EXECUTION_ERROR)
         return {"task_id": task_id, "status": "error"}
     finally:
         db.close()
@@ -284,9 +286,10 @@ def execute_work_order_analysis_task(
             model=settings.dashscope_model,
             cost_ms=cost_ms,
             status="error",
+            error_type=exc.error_type,
             error_message=error_message,
         )
-        failed_task = mark_task_error(db, task_id, error_message, cost_ms)
+        failed_task = mark_task_error(db, task_id, error_message, cost_ms, error_type=exc.error_type)
         if failed_task and failed_task.retry_count < failed_task.max_retries:
             delay_seconds = min(300, 5 * (2 ** failed_task.retry_count))
             retry_task, retry_event = prepare_work_order_analysis_task_retry(
@@ -323,9 +326,10 @@ def execute_work_order_analysis_task(
             model=settings.dashscope_model,
             cost_ms=cost_ms,
             status="error",
+            error_type=ERROR_TYPE_WORKER_EXECUTION_ERROR,
             error_message=error_message,
         )
-        mark_task_error(db, task_id, error_message, cost_ms)
+        mark_task_error(db, task_id, error_message, cost_ms, error_type=ERROR_TYPE_WORKER_EXECUTION_ERROR)
         return {"task_id": task_id, "status": "error"}
     finally:
         db.close()

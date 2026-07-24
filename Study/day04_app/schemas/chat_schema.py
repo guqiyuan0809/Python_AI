@@ -38,6 +38,10 @@ class WorkOrderAnalysisRequest(BaseModel):
     business_id: str | None = Field(None, min_length=1, description="可选业务 ID，例如工单 ID")
 
 
+class WorkOrderAnalysisParseTestRequest(BaseModel):
+    raw_text: str = Field(..., min_length=1, description="模拟模型返回的原始文本")
+
+
 class AsyncWorkOrderAnalysisTaskRequest(BaseModel):
     session_id: str = Field(..., min_length=1, description="会话 ID")
     content: str = Field(..., min_length=1, max_length=2000, description="需要 AI 分析的工单或业务问题内容")
@@ -121,6 +125,7 @@ class ChatMessageItem(BaseModel):
     completion_tokens: int | None = None
     total_tokens: int | None = None
     status: str
+    error_type: str | None = None
     error_message: str | None = None
     created_at: str
 
@@ -152,6 +157,7 @@ class AiCallLogItem(BaseModel):
     total_tokens: int | None = None
     cost_ms: int | None = None
     status: str
+    error_type: str | None = None
     error_message: str | None = None
     created_at: str
 
@@ -161,6 +167,30 @@ class AiCallLogPageResponse(BaseModel):
     page: int
     page_size: int
     items: list[AiCallLogItem]
+
+
+class AiFailureSampleItem(BaseModel):
+    sample_id: str
+    trace_id: str | None = None
+    task_id: str | None = None
+    session_id: str | None = None
+    message_id: str | None = None
+    call_type: str
+    model: str | None = None
+    schema_type: str
+    schema_version: str
+    error_type: str
+    error_message: str
+    raw_text: str | None = None
+    validation_error: str | None = None
+    created_at: str
+
+
+class AiFailureSamplePageResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[AiFailureSampleItem]
 
 
 class AsyncSessionChatTaskRequest(BaseModel):
@@ -192,6 +222,7 @@ class AsyncTaskStatusResponse(BaseModel):
     cost_ms: int | None = None
     retry_count: int
     max_retries: int
+    error_type: str | None = None
     error_message: str | None = None
     created_at: str
     updated_at: str

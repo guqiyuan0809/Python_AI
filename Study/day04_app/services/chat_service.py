@@ -12,9 +12,18 @@ from uuid import uuid4
 from openai import OpenAI
 from pydantic import ValidationError
 
-from day04_app.common.exceptions import ModelCallException
+from day04_app.common.exceptions import (
+    ERROR_TYPE_MODEL_CALL_FAILED,
+    ERROR_TYPE_STRUCTURED_FIELD_INVALID,
+    ERROR_TYPE_STRUCTURED_JSON_INVALID,
+    ModelCallException,
+)
 from day04_app.schemas.chat_schema import ChatResponse, WorkOrderAnalysisResponse, WorkOrderAnalysisResult
 from settings import settings
+
+
+WORK_ORDER_ANALYSIS_PROMPT_NAME = "work_order_analysis"
+WORK_ORDER_ANALYSIS_PROMPT_VERSION = "v2"
 
 
 def create_client(timeout: float = 30.0) -> OpenAI:
@@ -50,7 +59,10 @@ def safe_chat_with_messages(messages: list[dict]) -> ChatResponse:
             total_tokens=response.usage.total_tokens,
         )
     except Exception as exc:
-        raise ModelCallException(message=f"模型调用失败：{type(exc).__name__}") from exc
+        raise ModelCallException(
+            message=f"模型调用失败：{type(exc).__name__}",
+            error_type=ERROR_TYPE_MODEL_CALL_FAILED,
+        ) from exc
 
 
 def analyze_work_order_structured(content: str) -> WorkOrderAnalysisResponse:
@@ -62,6 +74,12 @@ def analyze_work_order_structured(content: str) -> WorkOrderAnalysisResponse:
                 "category 只能是 consult、complaint、repair、other；"
                 "risk_level 只能是 low、medium、high；"
                 "suggestions 必须是 1 到 5 条中文处理建议。"
+                "风险等级规则："
+                "low 表示普通咨询、信息确认、无现场处置诉求、无服务影响；"
+                "medium 表示投诉或报修需要工作人员跟进，存在卫生、设备、排队、体验影响，但没有争吵、伤害、安全隐患或明显舆情风险；"
+                "high 表示已经发生争吵冲突、人身安全风险、大面积服务中断、严重拥堵失控、可能引发舆情，或必须立即升级管理人员处置。"
+                "人工介入规则："
+                "咨询类且信息充分通常为 false；投诉、报修、输入信息不足、多人受影响、需要现场派单或需要客服核实时必须为 true。"
             ),
         },
         {
@@ -108,13 +126,22 @@ def analyze_work_order_structured(content: str) -> WorkOrderAnalysisResponse:
             repair_count=repair_count,
         )
     except ValidationError as exc:
-        raise ModelCallException(message=f"模型结构化输出字段不合法：{exc.errors()[0]['msg']}") from exc
+        raise ModelCallException(
+            message=f"模型结构化输出字段不合法：{exc.errors()[0]['msg']}",
+            error_type=ERROR_TYPE_STRUCTURED_FIELD_INVALID,
+        ) from exc
     except json.JSONDecodeError as exc:
-        raise ModelCallException(message="模型结构化输出不是合法 JSON") from exc
+        raise ModelCallException(
+            message="模型结构化输出不是合法 JSON",
+            error_type=ERROR_TYPE_STRUCTURED_JSON_INVALID,
+        ) from exc
     except ModelCallException:
         raise
     except Exception as exc:
-        raise ModelCallException(message=f"模型结构化分析失败：{type(exc).__name__}") from exc
+        raise ModelCallException(
+            message=f"模型结构化分析失败：{type(exc).__name__}",
+            error_type=ERROR_TYPE_MODEL_CALL_FAILED,
+        ) from exc
 
 
 def call_chat_completion(client: OpenAI, messages: list[dict]):
@@ -477,6 +504,7 @@ def stream_session_chat_events(
                 total_tokens=total_tokens,
                 cost_ms=cost_ms,
                 status="error",
+                error_type=ERROR_TYPE_MODEL_CALL_FAILED,
                 error_message=error_message,
             )
 

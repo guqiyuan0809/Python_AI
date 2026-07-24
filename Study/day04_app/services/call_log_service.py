@@ -23,6 +23,7 @@ def create_call_log(
     total_tokens: int | None = None,
     cost_ms: int | None = None,
     status: str = "success",
+    error_type: str | None = None,
     error_message: str | None = None,
 ) -> AiCallLog:
     # call_id 使用雪花 ID，后续可以跨 Java、Python、消息队列统一追踪。
@@ -38,6 +39,7 @@ def create_call_log(
         total_tokens=total_tokens,
         cost_ms=cost_ms,
         status=status,
+        error_type=error_type,
         error_message=error_message,
     )
     db.add(call_log)
@@ -53,6 +55,7 @@ def list_call_logs(
     trace_id: str | None = None,
     session_id: str | None = None,
     status: str | None = None,
+    error_type: str | None = None,
 ) -> tuple[list[AiCallLog], int]:
     filters = []
     if trace_id:
@@ -61,6 +64,8 @@ def list_call_logs(
         filters.append(AiCallLog.session_id == session_id)
     if status:
         filters.append(AiCallLog.status == status)
+    if error_type:
+        filters.append(AiCallLog.error_type == error_type)
 
     total_statement = select(func.count()).select_from(AiCallLog).where(*filters)
     total = db.scalar(total_statement) or 0

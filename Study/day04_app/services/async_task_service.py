@@ -11,7 +11,7 @@ from uuid import uuid4
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from day04_app.common.exceptions import BusinessException
+from day04_app.common.exceptions import BusinessException, ERROR_TYPE_TASK_TIMEOUT
 from day04_app.models import AiAsyncTask, AiTaskOutbox, ChatMessage
 from day04_app.utils.snowflake_id import next_snowflake_id
 
@@ -125,7 +125,7 @@ def create_async_session_chat_task(
     return task, outbox_event
 
 
-def create_async_work_order_analysis_task(
+def     create_async_work_order_analysis_task(
     db: Session,
     session_id: str,
     content: str,
@@ -280,6 +280,8 @@ def mark_task_success(
     task.completion_tokens = completion_tokens
     task.total_tokens = total_tokens
     task.cost_ms = cost_ms
+    task.error_type = None
+    task.error_message = None
     db.commit()
     db.refresh(task)
     return task
@@ -290,11 +292,13 @@ def mark_task_error(
     task_id: str,
     error_message: str,
     cost_ms: int | None,
+    error_type: str | None = None,
 ) -> AiAsyncTask | None:
     task = get_async_task(db, task_id)
     if task.status != TASK_STATUS_RUNNING:
         return None
     task.status = TASK_STATUS_ERROR
+    task.error_type = error_type
     task.error_message = error_message
     task.cost_ms = cost_ms
     db.commit()
@@ -323,6 +327,7 @@ def prepare_task_retry(
     task.completion_tokens = None
     task.total_tokens = None
     task.cost_ms = None
+    task.error_type = None
     task.error_message = None
     task.retry_count += 1
     outbox_event = _create_outbox_event(task, history_limit, delay_seconds)
@@ -355,6 +360,7 @@ def prepare_work_order_analysis_task_retry(
     task.completion_tokens = None
     task.total_tokens = None
     task.cost_ms = None
+    task.error_type = None
     task.error_message = None
     task.retry_count += 1
     outbox_event = _create_work_order_analysis_outbox_event(task, business_id, delay_seconds)
@@ -390,6 +396,7 @@ def mark_timeout_tasks_error(
     for task in timeout_tasks:
         error_message = f"异步任务超过 {timeout_minutes} 分钟未完成，已标记为超时失败"
         task.status = TASK_STATUS_ERROR
+        task.error_type = ERROR_TYPE_TASK_TIMEOUT
         task.error_message = error_message
         # 已创建 assistant 占位消息时，同步更新聊天历史，避免前端长期显示“生成中”。
         if task.message_id:
@@ -402,6 +409,7 @@ def mark_timeout_tasks_error(
                 .values(
                     content=error_message,
                     status="error",
+                    error_type=ERROR_TYPE_TASK_TIMEOUT,
                     error_message=error_message,
                 )
             )
