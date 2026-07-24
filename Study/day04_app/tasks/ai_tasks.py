@@ -11,6 +11,7 @@ from day04_app.services.async_task_service import (
     claim_pending_task_for_execution,
     mark_task_error,
     mark_task_success,
+    prepare_work_order_eval_task_retry,
     prepare_work_order_analysis_task_retry,
     prepare_task_retry,
 )
@@ -25,6 +26,8 @@ from day04_app.services.session_service import (
     update_message,
 )
 from day04_app.services.structured_result_service import create_structured_result
+from day04_app.services.eval_result_service import save_eval_report
+from day04_app.services.work_order_eval_runner import run_work_order_eval
 from settings import settings
 
 
@@ -330,6 +333,100 @@ def execute_work_order_analysis_task(
             error_message=error_message,
         )
         mark_task_error(db, task_id, error_message, cost_ms, error_type=ERROR_TYPE_WORKER_EXECUTION_ERROR)
+        return {"task_id": task_id, "status": "error"}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="day04_app.tasks.ai_tasks.execute_work_order_eval_task")
+def execute_work_order_eval_task(
+    task_id: str,
+    trace_id: str | None,
+    prompt_name: str,
+    prompt_version: str,
+    dataset_version: str,
+) -> dict:
+    """处理一条工单评测任务，成功后写入 ai_eval_run 和 ai_eval_case_result。"""
+    db = SessionLocal()
+    start_time: float | None = None
+    try:
+        task = claim_pending_task_for_execution(db, task_id)
+        if task is None:
+            return {"task_id": task_id, "status": "ignored"}
+
+        start_time = time.perf_counter()
+        report = run_work_order_eval(
+            prompt_name=prompt_name,
+            prompt_version=prompt_version,
+            dataset_version=dataset_version,
+        )
+        save_eval_report(db, report)
+        cost_ms = round((time.perf_counter() - start_time) * 1000)
+
+        result_text = (
+            f"评测完成，run_id={report['run_id']}，"
+            f"schema_valid_rate={report['metrics']['schema_valid_rate']}，"
+            f"risk_level_accuracy={report['metrics']['risk_level_accuracy']}"
+        )
+        completed_task = mark_task_success(
+            db,
+            task_id=task_id,
+            result_text=result_text,
+            prompt_tokens=None,
+            completion_tokens=None,
+            total_tokens=None,
+            cost_ms=cost_ms,
+        )
+        if completed_task is None:
+            return {"task_id": task_id, "status": "ignored"}
+
+        create_call_log(
+            db,
+            call_type="async_work_order_eval",
+            trace_id=trace_id,
+            model=None,
+            total_tokens=int(report["metrics"]["avg_total_tokens"] * report["metrics"]["sample_count"]),
+            cost_ms=cost_ms,
+            status="success",
+        )
+        return {"task_id": task_id, "status": "success", "run_id": report["run_id"]}
+    except Exception as exc:
+        cost_ms = round((time.perf_counter() - start_time) * 1000) if start_time else None
+        error_message = f"工单评测异步任务执行异常：{type(exc).__name__}"
+        logger.exception("task_id=%s %s", task_id, error_message)
+        create_call_log(
+            db,
+            call_type="async_work_order_eval",
+            trace_id=trace_id,
+            model=None,
+            cost_ms=cost_ms,
+            status="error",
+            error_type=ERROR_TYPE_WORKER_EXECUTION_ERROR,
+            error_message=error_message,
+        )
+        failed_task = mark_task_error(
+            db,
+            task_id,
+            error_message,
+            cost_ms,
+            error_type=ERROR_TYPE_WORKER_EXECUTION_ERROR,
+        )
+        if failed_task and failed_task.retry_count < failed_task.max_retries:
+            delay_seconds = min(300, 5 * (2 ** failed_task.retry_count))
+            retry_task, retry_event = prepare_work_order_eval_task_retry(
+                db,
+                task_id=task_id,
+                prompt_name=prompt_name,
+                prompt_version=prompt_version,
+                dataset_version=dataset_version,
+                delay_seconds=delay_seconds,
+            )
+            dispatch_outbox_event(db, retry_event.event_id)
+            return {
+                "task_id": retry_task.task_id,
+                "status": "retry_scheduled",
+                "retry_count": retry_task.retry_count,
+            }
         return {"task_id": task_id, "status": "error"}
     finally:
         db.close()

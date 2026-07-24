@@ -193,6 +193,118 @@ class AiFailureSamplePageResponse(BaseModel):
     items: list[AiFailureSampleItem]
 
 
+class AiEvalRunItem(BaseModel):
+    run_id: str
+    prompt_name: str
+    prompt_version: str
+    dataset_version: str
+    sample_count: int
+    schema_valid_rate: float
+    category_accuracy: float
+    risk_level_accuracy: float
+    human_review_accuracy: float
+    avg_total_tokens: float | None = None
+    avg_cost_ms: float | None = None
+    metrics: dict | None = None
+    created_at: str
+
+
+class AiEvalRunPageResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[AiEvalRunItem]
+
+
+class AiEvalCaseResultItem(BaseModel):
+    run_id: str
+    sample_id: str
+    schema_valid: bool
+    category_match: bool
+    risk_level_match: bool
+    human_review_match: bool
+    total_tokens: int | None = None
+    cost_ms: int | None = None
+    error_type: str | None = None
+    error_message: str | None = None
+    expected: dict | None = None
+    actual: dict | None = None
+    row: dict | None = None
+    created_at: str
+
+
+class AiEvalCaseResultPageResponse(BaseModel):
+    run_id: str
+    total: int
+    page: int
+    page_size: int
+    items: list[AiEvalCaseResultItem]
+
+
+class AiPromptVersionItem(BaseModel):
+    prompt_id: str
+    prompt_name: str
+    prompt_version: str
+    description: str | None = None
+    system_prompt: str
+    user_prompt_template: str
+    model: str | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
+    status: str
+    created_by: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class AiPromptVersionPageResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[AiPromptVersionItem]
+
+
+class AiEvalDatasetItem(BaseModel):
+    dataset_id: str
+    dataset_name: str
+    dataset_version: str
+    description: str | None = None
+    sample_count: int
+    status: str
+    created_by: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class AiEvalDatasetPageResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[AiEvalDatasetItem]
+
+
+class AiEvalSampleItem(BaseModel):
+    sample_id: str
+    dataset_id: str
+    dataset_version: str
+    sample_type: str
+    input_text: str
+    expected: dict
+    source_type: str
+    source_ref_id: str | None = None
+    status: str
+    created_by: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class AiEvalSamplePageResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[AiEvalSampleItem]
+
+
 class AsyncSessionChatTaskRequest(BaseModel):
     session_id: str = Field(..., min_length=1, description="会话 ID")
     message: str = Field(..., min_length=1, description="用户输入的问题")
@@ -202,6 +314,16 @@ class AsyncSessionChatTaskRequest(BaseModel):
 class AsyncTaskSubmitResponse(BaseModel):
     task_id: str
     status: str
+
+
+class AsyncWorkOrderEvalTaskRequest(BaseModel):
+    prompt_name: str = Field("work_order_analysis", min_length=1, description="Prompt 名称")
+    prompt_version: str = Field("v2", min_length=1, description="Prompt 版本")
+    dataset_version: str = Field(
+        "work_order_analysis_v1",
+        min_length=1,
+        description="评测数据集版本",
+    )
 
 
 class AsyncTaskStatusResponse(BaseModel):

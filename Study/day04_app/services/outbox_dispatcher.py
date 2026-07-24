@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from day04_app.celery_app import celery_app
 from day04_app.services.async_task_service import (
     OUTBOX_EVENT_SESSION_CHAT,
+    OUTBOX_EVENT_WORK_ORDER_EVAL,
     OUTBOX_EVENT_WORK_ORDER_ANALYSIS,
     OUTBOX_STATUS_PUBLISHED,
     get_outbox_event,
@@ -21,11 +22,13 @@ from day04_app.services.async_task_service import (
 logger = logging.getLogger("day04_app.outbox")
 SESSION_CHAT_TASK_NAME = "day04_app.tasks.ai_tasks.execute_session_chat_task"
 WORK_ORDER_ANALYSIS_TASK_NAME = "day04_app.tasks.ai_tasks.execute_work_order_analysis_task"
+WORK_ORDER_EVAL_TASK_NAME = "day04_app.tasks.ai_tasks.execute_work_order_eval_task"
 
 
 TASK_NAME_BY_EVENT_TYPE = {
     OUTBOX_EVENT_SESSION_CHAT: SESSION_CHAT_TASK_NAME,
     OUTBOX_EVENT_WORK_ORDER_ANALYSIS: WORK_ORDER_ANALYSIS_TASK_NAME,
+    OUTBOX_EVENT_WORK_ORDER_EVAL: WORK_ORDER_EVAL_TASK_NAME,
 }
 
 

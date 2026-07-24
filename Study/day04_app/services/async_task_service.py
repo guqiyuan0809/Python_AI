@@ -25,6 +25,7 @@ OUTBOX_STATUS_PENDING = "pending"
 OUTBOX_STATUS_PUBLISHED = "published"
 OUTBOX_EVENT_SESSION_CHAT = "session_chat.execute"
 OUTBOX_EVENT_WORK_ORDER_ANALYSIS = "work_order_analysis.execute"
+OUTBOX_EVENT_WORK_ORDER_EVAL = "work_order_eval.execute"
 
 
 def _build_session_chat_payload(task: AiAsyncTask, history_limit: int) -> str:
@@ -57,6 +58,24 @@ def _build_work_order_analysis_payload(
     )
 
 
+def _build_work_order_eval_payload(
+    task: AiAsyncTask,
+    prompt_name: str,
+    prompt_version: str,
+    dataset_version: str,
+) -> str:
+    return json.dumps(
+        {
+            "task_id": task.task_id,
+            "trace_id": task.trace_id,
+            "prompt_name": prompt_name,
+            "prompt_version": prompt_version,
+            "dataset_version": dataset_version,
+        },
+        ensure_ascii=False,
+    )
+
+
 def _create_outbox_event(
     task: AiAsyncTask,
     history_limit: int,
@@ -82,6 +101,28 @@ def _create_work_order_analysis_outbox_event(
         task_id=task.task_id,
         event_type=OUTBOX_EVENT_WORK_ORDER_ANALYSIS,
         payload=_build_work_order_analysis_payload(task, business_id),
+        status=OUTBOX_STATUS_PENDING,
+        available_at=datetime.now() + timedelta(seconds=delay_seconds),
+    )
+
+
+def _create_work_order_eval_outbox_event(
+    task: AiAsyncTask,
+    prompt_name: str,
+    prompt_version: str,
+    dataset_version: str,
+    delay_seconds: int = 0,
+) -> AiTaskOutbox:
+    return AiTaskOutbox(
+        event_id=next_snowflake_id(),
+        task_id=task.task_id,
+        event_type=OUTBOX_EVENT_WORK_ORDER_EVAL,
+        payload=_build_work_order_eval_payload(
+            task,
+            prompt_name=prompt_name,
+            prompt_version=prompt_version,
+            dataset_version=dataset_version,
+        ),
         status=OUTBOX_STATUS_PENDING,
         available_at=datetime.now() + timedelta(seconds=delay_seconds),
     )
@@ -125,7 +166,49 @@ def create_async_session_chat_task(
     return task, outbox_event
 
 
-def     create_async_work_order_analysis_task(
+def create_async_work_order_eval_task(
+    db: Session,
+    trace_id: str | None,
+    prompt_name: str,
+    prompt_version: str,
+    dataset_version: str,
+    max_retries: int,
+) -> tuple[AiAsyncTask, AiTaskOutbox]:
+    """创建后台评测任务；评测不属于某个用户会话，因此 session_id 使用 system_eval。"""
+    input_text = json.dumps(
+        {
+            "prompt_name": prompt_name,
+            "prompt_version": prompt_version,
+            "dataset_version": dataset_version,
+        },
+        ensure_ascii=False,
+    )
+    task = AiAsyncTask(
+        task_id=next_snowflake_id(),
+        trace_id=trace_id,
+        session_id="system_eval",
+        task_type="work_order_eval",
+        input_text=input_text,
+        model=None,
+        max_retries=max_retries,
+        status=TASK_STATUS_PENDING,
+    )
+    outbox_event = _create_work_order_eval_outbox_event(
+        task,
+        prompt_name=prompt_name,
+        prompt_version=prompt_version,
+        dataset_version=dataset_version,
+    )
+
+    # 评测任务和 Outbox 在同一事务提交，避免出现有任务但没有 MQ 投递事件。
+    db.add_all([task, outbox_event])
+    db.commit()
+    db.refresh(task)
+    db.refresh(outbox_event)
+    return task, outbox_event
+
+
+def create_async_work_order_analysis_task(
     db: Session,
     session_id: str,
     content: str,
@@ -364,6 +447,47 @@ def prepare_work_order_analysis_task_retry(
     task.error_message = None
     task.retry_count += 1
     outbox_event = _create_work_order_analysis_outbox_event(task, business_id, delay_seconds)
+
+    db.add(outbox_event)
+    db.commit()
+    db.refresh(task)
+    db.refresh(outbox_event)
+    return task, outbox_event
+
+
+def prepare_work_order_eval_task_retry(
+    db: Session,
+    task_id: str,
+    prompt_name: str,
+    prompt_version: str,
+    dataset_version: str,
+    delay_seconds: int = 0,
+) -> tuple[AiAsyncTask, AiTaskOutbox]:
+    """重试评测任务，并新建对应的 Outbox 事件。"""
+    task = get_async_task(db, task_id)
+    if task.status != TASK_STATUS_ERROR:
+        raise BusinessException(code=40008, message="只有失败任务可以重试")
+    if task.retry_count >= task.max_retries:
+        raise BusinessException(code=40009, message="任务已达到最大重试次数，请人工处理")
+
+    task.status = TASK_STATUS_PENDING
+    task.message_id = None
+    task.broker_task_id = None
+    task.result_text = None
+    task.prompt_tokens = None
+    task.completion_tokens = None
+    task.total_tokens = None
+    task.cost_ms = None
+    task.error_type = None
+    task.error_message = None
+    task.retry_count += 1
+    outbox_event = _create_work_order_eval_outbox_event(
+        task,
+        prompt_name=prompt_name,
+        prompt_version=prompt_version,
+        dataset_version=dataset_version,
+        delay_seconds=delay_seconds,
+    )
 
     db.add(outbox_event)
     db.commit()

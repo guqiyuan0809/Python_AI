@@ -24,6 +24,30 @@ from settings import settings
 
 WORK_ORDER_ANALYSIS_PROMPT_NAME = "work_order_analysis"
 WORK_ORDER_ANALYSIS_PROMPT_VERSION = "v2"
+WORK_ORDER_ANALYSIS_SYSTEM_PROMPT = (
+    "你是企业工单分析助手。你必须只输出一个合法 JSON 对象，不能输出 Markdown、解释或多余文本。"
+    "category 只能是 consult、complaint、repair、other；"
+    "risk_level 只能是 low、medium、high；"
+    "suggestions 必须是 1 到 5 条中文处理建议。"
+    "风险等级规则："
+    "low 表示普通咨询、信息确认、无现场处置诉求、无服务影响；"
+    "medium 表示投诉或报修需要工作人员跟进，存在卫生、设备、排队、体验影响，但没有争吵、伤害、安全隐患或明显舆情风险；"
+    "high 表示已经发生争吵冲突、人身安全风险、大面积服务中断、严重拥堵失控、可能引发舆情，或必须立即升级管理人员处置。"
+    "人工介入规则："
+    "咨询类且信息充分通常为 false；投诉、报修、输入信息不足、多人受影响、需要现场派单或需要客服核实时必须为 true。"
+)
+WORK_ORDER_ANALYSIS_USER_PROMPT_TEMPLATE = (
+    "请分析下面的工单内容，并严格按这个 JSON 结构返回：\n"
+    "{\n"
+    '  "category": "consult|complaint|repair|other",\n'
+    '  "risk_level": "low|medium|high",\n'
+    '  "summary": "200字以内的问题摘要",\n'
+    '  "suggestions": ["处理建议1", "处理建议2"],\n'
+    '  "need_human_review": true,\n'
+    '  "confidence": 0.85\n'
+    "}\n\n"
+    "工单内容：{content}"
+)
 
 
 def create_client(timeout: float = 30.0) -> OpenAI:
@@ -66,42 +90,45 @@ def safe_chat_with_messages(messages: list[dict]) -> ChatResponse:
 
 
 def analyze_work_order_structured(content: str) -> WorkOrderAnalysisResponse:
+    return analyze_work_order_structured_with_prompt(
+        content=content,
+        system_prompt=WORK_ORDER_ANALYSIS_SYSTEM_PROMPT,
+        user_prompt_template=WORK_ORDER_ANALYSIS_USER_PROMPT_TEMPLATE,
+        model=settings.dashscope_model,
+        temperature=0.1,
+        max_tokens=600,
+    )
+
+
+def analyze_work_order_structured_with_prompt(
+    content: str,
+    system_prompt: str,
+    user_prompt_template: str,
+    model: str | None = None,
+    temperature: float = 0.1,
+    max_tokens: int = 600,
+) -> WorkOrderAnalysisResponse:
+    user_prompt = render_user_prompt(user_prompt_template, content)
     messages = [
         {
             "role": "system",
-            "content": (
-                "你是企业工单分析助手。你必须只输出一个合法 JSON 对象，不能输出 Markdown、解释或多余文本。"
-                "category 只能是 consult、complaint、repair、other；"
-                "risk_level 只能是 low、medium、high；"
-                "suggestions 必须是 1 到 5 条中文处理建议。"
-                "风险等级规则："
-                "low 表示普通咨询、信息确认、无现场处置诉求、无服务影响；"
-                "medium 表示投诉或报修需要工作人员跟进，存在卫生、设备、排队、体验影响，但没有争吵、伤害、安全隐患或明显舆情风险；"
-                "high 表示已经发生争吵冲突、人身安全风险、大面积服务中断、严重拥堵失控、可能引发舆情，或必须立即升级管理人员处置。"
-                "人工介入规则："
-                "咨询类且信息充分通常为 false；投诉、报修、输入信息不足、多人受影响、需要现场派单或需要客服核实时必须为 true。"
-            ),
+            "content": system_prompt,
         },
         {
             "role": "user",
-            "content": (
-                "请分析下面的工单内容，并严格按这个 JSON 结构返回：\n"
-                "{\n"
-                '  "category": "consult|complaint|repair|other",\n'
-                '  "risk_level": "low|medium|high",\n'
-                '  "summary": "200字以内的问题摘要",\n'
-                '  "suggestions": ["处理建议1", "处理建议2"],\n'
-                '  "need_human_review": true,\n'
-                '  "confidence": 0.85\n'
-                "}\n\n"
-                f"工单内容：{content}"
-            ),
+            "content": user_prompt,
         },
     ]
 
     client = create_client(timeout=30.0)
     try:
-        response = call_chat_completion(client, messages)
+        response = call_chat_completion(
+            client,
+            messages,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
         raw_text = response.choices[0].message.content or ""
         try:
             # 模型本质仍返回字符串；这里先抽取 JSON 对象，再交给 Pydantic 做强类型校验。
@@ -112,7 +139,14 @@ def analyze_work_order_structured(content: str) -> WorkOrderAnalysisResponse:
             total_tokens = response.usage.total_tokens
         except (ValidationError, json.JSONDecodeError) as exc:
             # 首次输出不合格时，只允许走一次修复，避免模型格式异常导致接口无限重试。
-            repair_response = repair_work_order_analysis_output(client, raw_text, str(exc))
+            repair_response = repair_work_order_analysis_output(
+                client,
+                raw_text,
+                str(exc),
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
             analysis = parse_work_order_analysis(repair_response.choices[0].message.content or "")
             repair_count = 1
             prompt_tokens = response.usage.prompt_tokens + repair_response.usage.prompt_tokens
@@ -144,12 +178,25 @@ def analyze_work_order_structured(content: str) -> WorkOrderAnalysisResponse:
         ) from exc
 
 
-def call_chat_completion(client: OpenAI, messages: list[dict]):
+def render_user_prompt(user_prompt_template: str, content: str) -> str:
+    if "{content}" in user_prompt_template:
+        # 只替换业务输入占位符，避免 JSON 示例里的大括号被 str.format 当成模板变量。
+        return user_prompt_template.replace("{content}", content)
+    return f"{user_prompt_template}\n\n工单内容：{content}"
+
+
+def call_chat_completion(
+    client: OpenAI,
+    messages: list[dict],
+    model: str | None = None,
+    temperature: float = 0.1,
+    max_tokens: int = 600,
+):
     return client.chat.completions.create(
-        model=settings.dashscope_model,
+        model=model or settings.dashscope_model,
         messages=messages,
-        temperature=0.1,
-        max_tokens=600,
+        temperature=temperature,
+        max_tokens=max_tokens,
     )
 
 
@@ -158,7 +205,14 @@ def parse_work_order_analysis(raw_text: str) -> WorkOrderAnalysisResult:
     return WorkOrderAnalysisResult.model_validate_json(json_text)
 
 
-def repair_work_order_analysis_output(client: OpenAI, raw_text: str, error_message: str):
+def repair_work_order_analysis_output(
+    client: OpenAI,
+    raw_text: str,
+    error_message: str,
+    model: str | None = None,
+    temperature: float = 0.1,
+    max_tokens: int = 600,
+):
     repair_messages = [
         {
             "role": "system",
@@ -178,7 +232,13 @@ def repair_work_order_analysis_output(client: OpenAI, raw_text: str, error_messa
             ),
         },
     ]
-    return call_chat_completion(client, repair_messages)
+    return call_chat_completion(
+        client,
+        repair_messages,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
 
 
 def extract_json_object(raw_text: str) -> str:

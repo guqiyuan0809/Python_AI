@@ -17,9 +17,20 @@ from day04_app.database import get_db
 from day04_app.schemas.chat_schema import (
     AiCallLogItem,
     AiCallLogPageResponse,
+    AiEvalDatasetItem,
+    AiEvalDatasetPageResponse,
+    AiEvalCaseResultItem,
+    AiEvalCaseResultPageResponse,
+    AiEvalRunItem,
+    AiEvalRunPageResponse,
+    AiEvalSampleItem,
+    AiEvalSamplePageResponse,
     AiFailureSampleItem,
     AiFailureSamplePageResponse,
+    AiPromptVersionItem,
+    AiPromptVersionPageResponse,
     AsyncWorkOrderAnalysisTaskRequest,
+    AsyncWorkOrderEvalTaskRequest,
     AsyncSessionChatTaskRequest,
     AsyncTaskStatusResponse,
     AsyncTaskSubmitResponse,
@@ -44,6 +55,7 @@ from day04_app.schemas.chat_schema import (
 )
 from day04_app.services.async_task_service import (
     create_async_session_chat_task,
+    create_async_work_order_eval_task,
     create_async_work_order_analysis_task,
     get_async_task,
     mark_timeout_tasks_error,
@@ -51,6 +63,12 @@ from day04_app.services.async_task_service import (
 )
 from day04_app.services.call_log_service import create_call_log, list_call_logs
 from day04_app.services.failure_sample_service import create_failure_sample, list_failure_samples
+from day04_app.services.eval_query_service import list_eval_case_results, list_eval_runs
+from day04_app.services.eval_master_service import (
+    list_eval_datasets,
+    list_eval_samples_page,
+    list_prompt_versions,
+)
 from day04_app.services.chat_service import (
     analyze_work_order_structured,
     parse_work_order_analysis,
@@ -154,6 +172,101 @@ def to_failure_sample_item(sample) -> AiFailureSampleItem:
         raw_text=sample.raw_text,
         validation_error=sample.validation_error,
         created_at=sample.created_at.isoformat(timespec="seconds"),
+    )
+
+
+def parse_json_or_none(json_text: str | None) -> dict | None:
+    if not json_text:
+        return None
+    try:
+        return json.loads(json_text)
+    except json.JSONDecodeError:
+        return {"raw": json_text}
+
+
+def to_eval_run_item(eval_run) -> AiEvalRunItem:
+    return AiEvalRunItem(
+        run_id=eval_run.run_id,
+        prompt_name=eval_run.prompt_name,
+        prompt_version=eval_run.prompt_version,
+        dataset_version=eval_run.dataset_version,
+        sample_count=eval_run.sample_count,
+        schema_valid_rate=eval_run.schema_valid_rate,
+        category_accuracy=eval_run.category_accuracy,
+        risk_level_accuracy=eval_run.risk_level_accuracy,
+        human_review_accuracy=eval_run.human_review_accuracy,
+        avg_total_tokens=eval_run.avg_total_tokens,
+        avg_cost_ms=eval_run.avg_cost_ms,
+        metrics=parse_json_or_none(eval_run.metrics_json),
+        created_at=eval_run.created_at.isoformat(timespec="seconds"),
+    )
+
+
+def to_eval_case_result_item(case_result) -> AiEvalCaseResultItem:
+    return AiEvalCaseResultItem(
+        run_id=case_result.run_id,
+        sample_id=case_result.sample_id,
+        schema_valid=case_result.schema_valid == 1,
+        category_match=case_result.category_match == 1,
+        risk_level_match=case_result.risk_level_match == 1,
+        human_review_match=case_result.human_review_match == 1,
+        total_tokens=case_result.total_tokens,
+        cost_ms=case_result.cost_ms,
+        error_type=case_result.error_type,
+        error_message=case_result.error_message,
+        expected=parse_json_or_none(case_result.expected_json),
+        actual=parse_json_or_none(case_result.actual_json),
+        row=parse_json_or_none(case_result.row_json),
+        created_at=case_result.created_at.isoformat(timespec="seconds"),
+    )
+
+
+def to_prompt_version_item(prompt) -> AiPromptVersionItem:
+    return AiPromptVersionItem(
+        prompt_id=prompt.prompt_id,
+        prompt_name=prompt.prompt_name,
+        prompt_version=prompt.prompt_version,
+        description=prompt.description,
+        system_prompt=prompt.system_prompt,
+        user_prompt_template=prompt.user_prompt_template,
+        model=prompt.model,
+        temperature=prompt.temperature,
+        max_tokens=prompt.max_tokens,
+        status=prompt.status,
+        created_by=prompt.created_by,
+        created_at=prompt.created_at.isoformat(timespec="seconds"),
+        updated_at=prompt.updated_at.isoformat(timespec="seconds"),
+    )
+
+
+def to_eval_dataset_item(dataset) -> AiEvalDatasetItem:
+    return AiEvalDatasetItem(
+        dataset_id=dataset.dataset_id,
+        dataset_name=dataset.dataset_name,
+        dataset_version=dataset.dataset_version,
+        description=dataset.description,
+        sample_count=dataset.sample_count,
+        status=dataset.status,
+        created_by=dataset.created_by,
+        created_at=dataset.created_at.isoformat(timespec="seconds"),
+        updated_at=dataset.updated_at.isoformat(timespec="seconds"),
+    )
+
+
+def to_eval_sample_item(sample) -> AiEvalSampleItem:
+    return AiEvalSampleItem(
+        sample_id=sample.sample_id,
+        dataset_id=sample.dataset_id,
+        dataset_version=sample.dataset_version,
+        sample_type=sample.sample_type,
+        input_text=sample.input_text,
+        expected=parse_json_or_none(sample.expected_json) or {},
+        source_type=sample.source_type,
+        source_ref_id=sample.source_ref_id,
+        status=sample.status,
+        created_by=sample.created_by,
+        created_at=sample.created_at.isoformat(timespec="seconds"),
+        updated_at=sample.updated_at.isoformat(timespec="seconds"),
     )
 
 
@@ -357,6 +470,197 @@ def list_ai_failure_samples(
             items=[to_failure_sample_item(sample) for sample in samples],
         ),
         trace_id=request.state.trace_id,
+    )
+
+
+@router.get(
+    "/prompt-versions",
+    response_model=ApiResponse[AiPromptVersionPageResponse],
+    summary="分页查询 AI Prompt 版本",
+)
+def list_ai_prompt_versions(
+    request: Request,
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    prompt_name: str | None = Query(None, description="Prompt 名称，例如 work_order_analysis"),
+    status: str | None = Query(None, description="Prompt 状态，例如 active/draft"),
+    db: Session = Depends(get_db),
+) -> ApiResponse[AiPromptVersionPageResponse]:
+    prompts, total = list_prompt_versions(
+        db,
+        page=page,
+        page_size=page_size,
+        prompt_name=prompt_name,
+        status=status,
+    )
+    return success(
+        AiPromptVersionPageResponse(
+            total=total,
+            page=page,
+            page_size=page_size,
+            items=[to_prompt_version_item(prompt) for prompt in prompts],
+        ),
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.get(
+    "/eval-datasets",
+    response_model=ApiResponse[AiEvalDatasetPageResponse],
+    summary="分页查询 AI 评测数据集",
+)
+def list_ai_eval_datasets(
+    request: Request,
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    dataset_name: str | None = Query(None, description="数据集名称，例如 work_order_analysis"),
+    status: str | None = Query(None, description="数据集状态，例如 active"),
+    db: Session = Depends(get_db),
+) -> ApiResponse[AiEvalDatasetPageResponse]:
+    datasets, total = list_eval_datasets(
+        db,
+        page=page,
+        page_size=page_size,
+        dataset_name=dataset_name,
+        status=status,
+    )
+    return success(
+        AiEvalDatasetPageResponse(
+            total=total,
+            page=page,
+            page_size=page_size,
+            items=[to_eval_dataset_item(dataset) for dataset in datasets],
+        ),
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.get(
+    "/eval-samples",
+    response_model=ApiResponse[AiEvalSamplePageResponse],
+    summary="分页查询 AI 评测样本",
+)
+def list_ai_eval_samples(
+    request: Request,
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    dataset_version: str | None = Query(None, description="数据集版本，例如 work_order_analysis_v1"),
+    sample_type: str | None = Query(None, description="样本类型，例如 normal/boundary/error"),
+    status: str | None = Query(None, description="样本状态，例如 active"),
+    db: Session = Depends(get_db),
+) -> ApiResponse[AiEvalSamplePageResponse]:
+    samples, total = list_eval_samples_page(
+        db,
+        page=page,
+        page_size=page_size,
+        dataset_version=dataset_version,
+        sample_type=sample_type,
+        status=status,
+    )
+    return success(
+        AiEvalSamplePageResponse(
+            total=total,
+            page=page,
+            page_size=page_size,
+            items=[to_eval_sample_item(sample) for sample in samples],
+        ),
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.get(
+    "/eval-runs",
+    response_model=ApiResponse[AiEvalRunPageResponse],
+    summary="分页查询 AI 评测运行记录",
+)
+def list_ai_eval_runs(
+    request: Request,
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    prompt_name: str | None = Query(None, description="Prompt 名称，例如 work_order_analysis"),
+    prompt_version: str | None = Query(None, description="Prompt 版本，例如 v2"),
+    dataset_version: str | None = Query(None, description="数据集版本，例如 work_order_analysis_v1"),
+    db: Session = Depends(get_db),
+) -> ApiResponse[AiEvalRunPageResponse]:
+    eval_runs, total = list_eval_runs(
+        db,
+        page=page,
+        page_size=page_size,
+        prompt_name=prompt_name,
+        prompt_version=prompt_version,
+        dataset_version=dataset_version,
+    )
+    return success(
+        AiEvalRunPageResponse(
+            total=total,
+            page=page,
+            page_size=page_size,
+            items=[to_eval_run_item(eval_run) for eval_run in eval_runs],
+        ),
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.get(
+    "/eval-runs/{run_id}/cases",
+    response_model=ApiResponse[AiEvalCaseResultPageResponse],
+    summary="分页查询某次 AI 评测的样本明细",
+)
+def list_ai_eval_case_results(
+    run_id: str,
+    request: Request,
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(50, ge=1, le=200, description="每页数量"),
+    only_failed: bool = Query(False, description="是否只查看未命中的样本"),
+    db: Session = Depends(get_db),
+) -> ApiResponse[AiEvalCaseResultPageResponse]:
+    case_results, total = list_eval_case_results(
+        db,
+        run_id=run_id,
+        page=page,
+        page_size=page_size,
+        only_failed=only_failed,
+    )
+    return success(
+        AiEvalCaseResultPageResponse(
+            run_id=run_id,
+            total=total,
+            page=page,
+            page_size=page_size,
+            items=[to_eval_case_result_item(case_result) for case_result in case_results],
+        ),
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.post(
+    "/evals/work-order/run/async",
+    response_model=ApiResponse[AsyncTaskSubmitResponse],
+    summary="异步触发工单结构化分析评测",
+)
+def submit_async_work_order_eval(
+    request_body: AsyncWorkOrderEvalTaskRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[AsyncTaskSubmitResponse]:
+    trace_id = request.state.trace_id
+    task, outbox_event = create_async_work_order_eval_task(
+        db,
+        trace_id=trace_id,
+        prompt_name=request_body.prompt_name,
+        prompt_version=request_body.prompt_version,
+        dataset_version=request_body.dataset_version,
+        max_retries=settings.async_task_max_retries,
+    )
+    # 投递失败时 Outbox 保持 pending，由 Celery Beat 后续补发。
+    dispatch_outbox_event(db, outbox_event.event_id)
+    return success(
+        AsyncTaskSubmitResponse(
+            task_id=task.task_id,
+            status=task.status,
+        ),
+        message="工单评测任务已提交",
+        trace_id=trace_id,
     )
 
 
