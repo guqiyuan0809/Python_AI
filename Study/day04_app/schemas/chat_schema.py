@@ -193,6 +193,24 @@ class AiFailureSamplePageResponse(BaseModel):
     items: list[AiFailureSampleItem]
 
 
+class WorkOrderEvalExpected(BaseModel):
+    category: Literal["consult", "complaint", "repair", "other"] = Field(..., description="人工标注的问题分类")
+    risk_level: Literal["low", "medium", "high"] = Field(..., description="人工标注的风险等级")
+    need_human_review: bool = Field(..., description="人工标注是否需要人工复核")
+
+
+class ConvertFailureSampleToEvalSampleRequest(BaseModel):
+    # 前端可先选择数据集；不传两个字段时，由后端按失败样本的 schema 自动匹配默认数据集。
+    dataset_id: str | None = Field(None, min_length=1, description="可选的目标评测数据集 ID")
+    dataset_version: str | None = Field(None, min_length=1, description="可选的目标评测数据集版本")
+    sample_type: Literal["normal", "boundary", "error"] = Field(
+        "error",
+        description="样本类型，描述输入场景而不是 expected 是否正确",
+    )
+    input_text: str = Field(..., min_length=1, max_length=4000, description="人工整理后的评测输入")
+    expected: WorkOrderEvalExpected = Field(..., description="人工标注的正确期望结果")
+
+
 class AiEvalRunItem(BaseModel):
     run_id: str
     prompt_name: str
@@ -239,6 +257,82 @@ class AiEvalCaseResultPageResponse(BaseModel):
     page: int
     page_size: int
     items: list[AiEvalCaseResultItem]
+
+
+class EvalGateCompareRequest(BaseModel):
+    baseline_run_id: str = Field(..., min_length=1, description="已上线基线 Prompt 的评测运行 ID")
+    candidate_run_id: str = Field(..., min_length=1, description="候选 Prompt 的评测运行 ID")
+
+
+class AiEvalGateDecisionItem(BaseModel):
+    gate_id: str
+    baseline_run_id: str
+    candidate_run_id: str
+    prompt_name: str
+    dataset_version: str
+    decision: Literal["pass", "reject", "manual_review"]
+    comparison: dict
+    reasons: list[dict]
+    rule_snapshot: dict
+    created_at: str
+
+
+class AiEvalGateDecisionPageResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[AiEvalGateDecisionItem]
+
+
+class PublishPromptVersionRequest(BaseModel):
+    gate_id: str = Field(..., min_length=1, description="本次发布依据的评测门禁 ID")
+    approval_note: str = Field(..., min_length=5, max_length=1000, description="人工批准说明")
+    # 当前 Python 服务未接入登录体系，先显式传入；后续应由 Java 透传的登录用户替代。
+    approved_by: str = Field("manual_reviewer", min_length=1, max_length=64, description="批准人标识")
+
+
+class AiPromptPublishAuditItem(BaseModel):
+    publish_id: str
+    gate_id: str
+    prompt_id: str
+    prompt_name: str
+    candidate_prompt_version: str
+    previous_prompt_version: str | None = None
+    gate_decision: Literal["pass", "manual_review"]
+    approval_note: str
+    approved_by: str
+    published_at: str
+
+
+class AiPromptPublishAuditPageResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[AiPromptPublishAuditItem]
+
+
+class RollbackPromptVersionRequest(BaseModel):
+    rollback_reason: str = Field(..., min_length=5, max_length=1000, description="人工回滚原因")
+    # 当前 Python 服务未接入登录体系，先显式传入；后续应由 Java 透传的登录用户替代。
+    rolled_back_by: str = Field("manual_reviewer", min_length=1, max_length=64, description="回滚执行人标识")
+
+
+class AiPromptRollbackAuditItem(BaseModel):
+    rollback_id: str
+    publish_id: str
+    prompt_name: str
+    rolled_back_prompt_version: str
+    restored_prompt_version: str
+    rollback_reason: str
+    rolled_back_by: str
+    rolled_back_at: str
+
+
+class AiPromptRollbackAuditPageResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[AiPromptRollbackAuditItem]
 
 
 class AiPromptVersionItem(BaseModel):

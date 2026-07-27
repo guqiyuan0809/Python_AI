@@ -18,7 +18,9 @@ from day04_app.common.exceptions import (
     ERROR_TYPE_STRUCTURED_JSON_INVALID,
     ModelCallException,
 )
+from day04_app.database import SessionLocal
 from day04_app.schemas.chat_schema import ChatResponse, WorkOrderAnalysisResponse, WorkOrderAnalysisResult
+from day04_app.services.eval_master_service import get_active_prompt_version_for_runtime
 from settings import settings
 
 
@@ -90,14 +92,20 @@ def safe_chat_with_messages(messages: list[dict]) -> ChatResponse:
 
 
 def analyze_work_order_structured(content: str) -> WorkOrderAnalysisResponse:
-    return analyze_work_order_structured_with_prompt(
-        content=content,
-        system_prompt=WORK_ORDER_ANALYSIS_SYSTEM_PROMPT,
-        user_prompt_template=WORK_ORDER_ANALYSIS_USER_PROMPT_TEMPLATE,
-        model=settings.dashscope_model,
-        temperature=0.1,
-        max_tokens=600,
-    )
+    db = SessionLocal()
+    try:
+        # 发布动作只改数据库状态；真实业务在这里读取当前唯一 active 版本，才会实际完成切换。
+        prompt = get_active_prompt_version_for_runtime(db, WORK_ORDER_ANALYSIS_PROMPT_NAME)
+        return analyze_work_order_structured_with_prompt(
+            content=content,
+            system_prompt=prompt.system_prompt,
+            user_prompt_template=prompt.user_prompt_template,
+            model=prompt.model or settings.dashscope_model,
+            temperature=prompt.temperature if prompt.temperature is not None else 0.1,
+            max_tokens=prompt.max_tokens or 600,
+        )
+    finally:
+        db.close()
 
 
 def analyze_work_order_structured_with_prompt(

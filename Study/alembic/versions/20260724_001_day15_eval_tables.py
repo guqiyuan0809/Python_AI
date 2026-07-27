@@ -12,7 +12,8 @@ from alembic import op
 
 
 revision: str = "20260724_001"
-down_revision: str | None = "20260723_002"
+# 必须引用前一个迁移的完整 revision ID，文件名中的日期序号不是 Alembic 的版本号。
+down_revision: str | None = "20260723_002_day15_failure_sample"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

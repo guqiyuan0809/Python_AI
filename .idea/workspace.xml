@@ -4,33 +4,27 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="5108f4fb-6914-4289-8411-3469ec54b2e8" name="更改" comment="第15天">
-      <change afterPath="$PROJECT_DIR$/Study/alembic/versions/20260724_001_day15_eval_tables.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/day04_app/services/eval_master_service.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/day04_app/services/eval_query_service.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/day04_app/services/eval_result_service.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/day04_app/services/work_order_eval_runner.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/evals/reports/.gitkeep" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/evals/reports/wo_eval_20260723_225310_f79149de.json" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/evals/reports/wo_eval_20260724_092622_2fa60f0c.json" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/evals/reports/wo_eval_20260724_094558_b67b60a7.json" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/evals/reports/write_test.txt" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/init_day16_prompt_eval_master_data.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/migrate_add_chinese_comments.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/migrate_day15_eval_tables.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/migrate_day16_prompt_eval_master_tables.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/python-AI应用开发学习路线及提示词/Day15_AI结构化输出稳定性与Harness评测笔记.md" afterDir="false" />
+    <list default="true" id="5108f4fb-6914-4289-8411-3469ec54b2e8" name="更改" comment="第16天">
+      <change afterPath="$PROJECT_DIR$/Study/alembic/versions/20260724_002_day16_prompt_eval_master.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Study/alembic/versions/20260725_001_day17_eval_gate.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Study/alembic/versions/20260725_002_day17_eval_gate_comments.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Study/alembic/versions/20260727_001_fix_eval_gate_id_autoincrement.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Study/alembic/versions/20260727_002_day18_prompt_publish_audit.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Study/alembic/versions/20260727_003_day18_prompt_rollback_audit.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Study/day04_app/services/eval_gate_service.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Study/day04_app/services/prompt_publish_service.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/alembic/versions/20260724_001_day15_eval_tables.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/alembic/versions/20260724_001_day15_eval_tables.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/celerybeat-schedule" beforeDir="false" afterPath="$PROJECT_DIR$/Study/celerybeat-schedule" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Study/celerybeat-schedule-shm" beforeDir="false" afterPath="$PROJECT_DIR$/Study/celerybeat-schedule-shm" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Study/celerybeat-schedule-wal" beforeDir="false" afterPath="$PROJECT_DIR$/Study/celerybeat-schedule-wal" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/models.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/models.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Study/day04_app/routers/chat_router.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/routers/chat_router.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Study/day04_app/schemas/chat_schema.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/schemas/chat_schema.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/async_task_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/async_task_service.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Study/day04_app/services/chat_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/chat_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/outbox_dispatcher.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/outbox_dispatcher.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Study/day04_app/tasks/ai_tasks.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/tasks/ai_tasks.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Study/evals/run_work_order_eval.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/evals/run_work_order_eval.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/python-AI应用开发学习路线及提示词/学习进度.md" beforeDir="false" afterPath="$PROJECT_DIR$/python-AI应用开发学习路线及提示词/学习进度.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/eval_master_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/eval_master_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/failure_sample_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/failure_sample_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/work_order_eval_runner.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/work_order_eval_runner.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -38,7 +32,7 @@
     <option name="LAST_RESOLUTION" value="IGNORE" />
   </component>
   <component name="EmbeddingIndexingInfo">
-    <option name="cachedIndexableFilesCount" value="194" />
+    <option name="cachedIndexableFilesCount" value="211" />
   </component>
   <component name="FileTemplateManagerImpl">
     <option name="RECENT_TEMPLATES">
@@ -72,23 +66,23 @@
   </component>
   <component name="NextEditCompletionFeaturesState">
     <decayedCancelled>
-      <entry key="MS100" value="1.1647234485368037" />
-      <entry key="MS500" value="2.4356969988521064" />
-      <entry key="S2" value="3.466576907096959" />
-      <entry key="S5" value="3.7713258798027103" />
-      <entry key="S10" value="3.882924620413821" />
-      <entry key="S30" value="3.9603477897123684" />
-      <entry key="S60" value="3.9800943174680548" />
-      <entry key="M2" value="3.990027173788004" />
-      <entry key="M5" value="3.9960060614804047" />
-      <entry key="M10" value="3.9980022709511736" />
-      <entry key="M15" value="3.998696577886718" />
-      <entry key="M30" value="4.020094985209208" />
-      <entry key="H1" value="4.615880616932992" />
-      <entry key="H2" value="9.05045413166019" />
-      <entry key="H4" value="36.091762153947414" />
-      <entry key="D1" value="339.54629534667583" />
-      <entry key="W1" value="542.7328387728452" />
+      <entry key="MS100" value="1.0" />
+      <entry key="MS500" value="1.0" />
+      <entry key="S2" value="1.0" />
+      <entry key="S5" value="1.0" />
+      <entry key="S10" value="1.0" />
+      <entry key="S30" value="1.0" />
+      <entry key="S60" value="1.0" />
+      <entry key="M2" value="1.0" />
+      <entry key="M5" value="1.0" />
+      <entry key="M10" value="1.0000000011141619" />
+      <entry key="M15" value="1.0000017060376598" />
+      <entry key="M30" value="1.0026258589620018" />
+      <entry key="H1" value="1.1179701437392058" />
+      <entry key="H2" value="2.4468687677654724" />
+      <entry key="H4" value="15.430702446571933" />
+      <entry key="D1" value="292.43758576975364" />
+      <entry key="W1" value="532.0153039265496" />
     </decayedCancelled>
     <decayedSelected>
       <entry key="MS100" value="0.0" />
@@ -97,36 +91,36 @@
       <entry key="S5" value="0.0" />
       <entry key="S10" value="0.0" />
       <entry key="S30" value="0.0" />
-      <entry key="S60" value="6.512083339357365E-235" />
-      <entry key="M2" value="1.6069735063969384E-117" />
-      <entry key="M5" value="4.863704878516215E-47" />
-      <entry key="M10" value="1.5689146981275906E-23" />
-      <entry key="M15" value="1.1033332070250522E-15" />
-      <entry key="M30" value="9.00025283080464E-8" />
-      <entry key="H1" value="0.0013777513560174752" />
-      <entry key="H2" value="0.2833768815310434" />
-      <entry key="H4" value="5.607388083673653" />
-      <entry key="D1" value="93.79581113122074" />
-      <entry key="W1" value="157.59089104043647" />
+      <entry key="S60" value="0.0" />
+      <entry key="M2" value="2.7010643893067653E-165" />
+      <entry key="M5" value="3.7772671611301296E-66" />
+      <entry key="M10" value="4.3722458654297184E-33" />
+      <entry key="M15" value="4.707353923528165E-22" />
+      <entry key="M30" value="5.878814964074874E-11" />
+      <entry key="H1" value="3.5211813085032136E-5" />
+      <entry key="H2" value="0.0453026061929593" />
+      <entry key="H4" value="2.2420226696827408" />
+      <entry key="D1" value="80.50632601804465" />
+      <entry key="W1" value="154.18852319882896" />
     </decayedSelected>
     <decayedShown>
-      <entry key="MS100" value="0.1655735955712725" />
-      <entry key="MS500" value="1.6788607357051775" />
-      <entry key="S2" value="3.1687993449659584" />
-      <entry key="S5" value="3.6394661074037535" />
-      <entry key="S10" value="3.814665049718594" />
-      <entry key="S30" value="3.9370563186745957" />
-      <entry key="S60" value="3.9683799689687875" />
-      <entry key="M2" value="3.984152745082059" />
-      <entry key="M5" value="3.993652135904672" />
-      <entry key="M10" value="3.996824614725033" />
-      <entry key="M15" value="3.9979113190178235" />
-      <entry key="M30" value="4.019702156327242" />
-      <entry key="H1" value="4.617057277560276" />
-      <entry key="H2" value="9.333606834020333" />
-      <entry key="H4" value="41.69800129721489" />
-      <entry key="D1" value="433.33909863820315" />
-      <entry key="W1" value="700.3230087305353" />
+      <entry key="MS100" value="0.7684375906440062" />
+      <entry key="MS500" value="0.9486843151404539" />
+      <entry key="S2" value="0.9869165458858419" />
+      <entry key="S5" value="0.9947459325778691" />
+      <entry key="S10" value="0.9973695065410157" />
+      <entry key="S30" value="0.9991223988885992" />
+      <entry key="S60" value="0.999561103129068" />
+      <entry key="M2" value="0.9997805274804406" />
+      <entry key="M5" value="0.9999122052113171" />
+      <entry key="M10" value="0.9999561027559594" />
+      <entry key="M15" value="0.9999724399165916" />
+      <entry key="M30" value="1.0026109693726493" />
+      <entry key="H1" value="1.1179928996589923" />
+      <entry key="H2" value="2.4921318768413525" />
+      <entry key="H4" value="17.67226390203557" />
+      <entry key="D1" value="372.9413298098369" />
+      <entry key="W1" value="686.2031215671685" />
     </decayedShown>
   </component>
   <component name="ProjectColorInfo">{
@@ -143,6 +137,7 @@
   </component>
   <component name="PropertiesComponent">{
   &quot;keyToString&quot;: {
+    &quot;Celery.Celery day04_app.celery_app.executor&quot;: &quot;Run&quot;,
     &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
     &quot;Python.DemoClass.executor&quot;: &quot;Run&quot;,
     &quot;Python.day01.executor&quot;: &quot;Run&quot;,
@@ -244,9 +239,26 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
+    <configuration name="Celery day04_app.celery_app" type="Python.Celery" factoryName="Python.Celery.App" temporary="true">
+      <option name="app" value="day04_app.celery_app" />
+      <module name="Pythoncode" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="" />
+      <option name="IS_MODULE_SDK" value="false" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="DEBUG_JUST_MY_CODE" value="false" />
+      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
+      <option name="RUN_TOOL" value="" />
+      <method v="2" />
+    </configuration>
     <recent_temporary>
       <list>
         <item itemvalue="Python.run_day04" />
+        <item itemvalue="Celery.Celery day04_app.celery_app" />
         <item itemvalue="Python.day02" />
         <item itemvalue="Python.ljh1" />
       </list>
@@ -305,7 +317,9 @@
       <workItem from="1784594404515" duration="1912000" />
       <workItem from="1784678942417" duration="17484000" />
       <workItem from="1784768270232" duration="9432000" />
-      <workItem from="1784854391118" duration="11021000" />
+      <workItem from="1784854391118" duration="11672000" />
+      <workItem from="1784938125128" duration="4900000" />
+      <workItem from="1785110737064" duration="4202000" />
     </task>
     <task id="LOCAL-00001" summary="111">
       <option name="closed" value="true" />
@@ -435,7 +449,15 @@
       <option name="project" value="LOCAL" />
       <updated>1784860639549</updated>
     </task>
-    <option name="localTasksCounter" value="17" />
+    <task id="LOCAL-00017" summary="第16天">
+      <option name="closed" value="true" />
+      <created>1784879695660</created>
+      <option name="number" value="00017" />
+      <option name="presentableId" value="LOCAL-00017" />
+      <option name="project" value="LOCAL" />
+      <updated>1784879695660</updated>
+    </task>
+    <option name="localTasksCounter" value="18" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -476,12 +498,14 @@
     <MESSAGE value="第12天" />
     <MESSAGE value="第14天" />
     <MESSAGE value="第15天" />
-    <option name="LAST_COMMIT_MESSAGE" value="第15天" />
+    <MESSAGE value="第16天" />
+    <option name="LAST_COMMIT_MESSAGE" value="第16天" />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/Pythoncode$DemoClass.coverage" NAME="DemoClass 覆盖结果" MODIFIED="1779969206789" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/Pythoncode$day02.coverage" NAME="day02 覆盖结果" MODIFIED="1780649030673" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/Study" />
-    <SUITE FILE_PATH="coverage/Pythoncode$run_day04.coverage" NAME="run_day04 覆盖结果" MODIFIED="1784876414374" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/Study" />
+    <SUITE FILE_PATH="coverage/Pythoncode$Celery_day04_app_celery_app.coverage" NAME="Celery day04_app.celery_app 覆盖结果" MODIFIED="1785112348991" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="" />
+    <SUITE FILE_PATH="coverage/Pythoncode$run_day04.coverage" NAME="run_day04 覆盖结果" MODIFIED="1785118048973" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/Study" />
     <SUITE FILE_PATH="coverage/Pythoncode$day01.coverage" NAME="day01 覆盖结果" MODIFIED="1780408580009" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/Study" />
     <SUITE FILE_PATH="coverage/Pythoncode$ljh1.coverage" NAME="ljh1 覆盖结果" MODIFIED="1780045234815" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/Pythoncode$day04_fastapi.coverage" NAME="day04_fastapi 覆盖结果" MODIFIED="1780748592809" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/Study" />

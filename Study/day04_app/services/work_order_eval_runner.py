@@ -17,7 +17,7 @@ from day04_app.database import SessionLocal
 from day04_app.services.chat_service import analyze_work_order_structured_with_prompt
 from day04_app.services.eval_master_service import (
     EvalSampleDTO,
-    get_active_prompt_version,
+    get_prompt_version_for_eval,
     list_active_eval_samples,
 )
 
@@ -39,7 +39,8 @@ def load_eval_context(prompt_name: str, prompt_version: str, dataset_version: st
     db = SessionLocal()
     try:
         # 只在这里读取主数据；后续执行模型调用时不依赖打开的数据库连接。
-        prompt = get_active_prompt_version(db, prompt_name, prompt_version)
+        # Harness 允许评测 draft 候选版本；线上业务调用仍应只选 active 版本。
+        prompt = get_prompt_version_for_eval(db, prompt_name, prompt_version)
         samples = list_active_eval_samples(db, dataset_version)
         return prompt, samples
     finally:

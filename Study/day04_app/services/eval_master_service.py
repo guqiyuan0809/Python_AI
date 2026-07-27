@@ -24,20 +24,38 @@ class EvalSampleDTO:
     sample_type: str
 
 
-def get_active_prompt_version(
+def get_prompt_version_for_eval(
     db: Session,
     prompt_name: str,
     prompt_version: str,
 ) -> AiPromptVersion:
+    """读取可参与 Harness 的 Prompt；draft 可评测，但不能代表已上线版本。"""
     prompt = db.scalar(
         select(AiPromptVersion)
         .where(AiPromptVersion.prompt_name == prompt_name)
         .where(AiPromptVersion.prompt_version == prompt_version)
-        .where(AiPromptVersion.status == "active")
+        .where(AiPromptVersion.status.in_(("draft", "active")))
     )
     if not prompt:
-        raise RuntimeError(f"未找到可用 Prompt：{prompt_name}:{prompt_version}")
+        raise RuntimeError(f"未找到可评测的 Prompt：{prompt_name}:{prompt_version}")
     return prompt
+
+
+def get_active_prompt_version_for_runtime(db: Session, prompt_name: str) -> AiPromptVersion:
+    """读取线上运行时唯一可用的 active Prompt，禁止 draft/archived 进入真实业务调用。"""
+    prompts = list(
+        db.scalars(
+            select(AiPromptVersion)
+            .where(AiPromptVersion.prompt_name == prompt_name)
+            .where(AiPromptVersion.status == "active")
+            .order_by(AiPromptVersion.id.desc())
+        ).all()
+    )
+    if not prompts:
+        raise RuntimeError(f"未找到线上 active Prompt：{prompt_name}")
+    if len(prompts) > 1:
+        raise RuntimeError(f"检测到多个线上 active Prompt：{prompt_name}，请先处理发布状态异常")
+    return prompts[0]
 
 
 def list_active_eval_samples(db: Session, dataset_version: str) -> list[EvalSampleDTO]:

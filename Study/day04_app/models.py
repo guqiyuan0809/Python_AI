@@ -333,3 +333,168 @@ class AiEvalCaseResult(Base):
     # 保存整行结果，方便后续扩展更多评测字段，不破坏历史数据。
     row_json: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class AiEvalGateDecision(Base):
+    """评测准入门禁表，保存候选 Prompt 与基线 Prompt 的比较结论。"""
+
+    __tablename__ = "ai_eval_gate_decision"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+        comment="数据库自增主键",
+    )
+    gate_id: Mapped[str] = mapped_column(
+        String(64),
+        unique=True,
+        index=True,
+        comment="评测门禁业务唯一 ID",
+    )
+    baseline_run_id: Mapped[str] = mapped_column(
+        String(64),
+        index=True,
+        comment="已上线基线 Prompt 的评测运行 ID",
+    )
+    candidate_run_id: Mapped[str] = mapped_column(
+        String(64),
+        index=True,
+        comment="候选 Prompt 的评测运行 ID",
+    )
+    prompt_name: Mapped[str] = mapped_column(
+        String(64),
+        index=True,
+        comment="业务 Prompt 名称，例如 work_order_analysis",
+    )
+    dataset_version: Mapped[str] = mapped_column(
+        String(64),
+        index=True,
+        comment="本次比较使用的评测数据集版本",
+    )
+    # pass/reject/manual_review；它只表达评测建议，不直接修改 Prompt 的发布状态。
+    decision: Mapped[str] = mapped_column(
+        String(32),
+        index=True,
+        comment="门禁结论：pass、reject 或 manual_review",
+    )
+    # 保存当时指标差异、命中规则和规则版本，确保以后规则升级仍可解释历史结论。
+    comparison_json: Mapped[str] = mapped_column(Text, comment="基线与候选评测指标差异 JSON")
+    reason_json: Mapped[str] = mapped_column(Text, comment="命中门禁规则与判定原因 JSON")
+    rule_snapshot_json: Mapped[str] = mapped_column(Text, comment="本次门禁使用的规则快照 JSON")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+        comment="门禁判定创建时间",
+    )
+
+
+class AiPromptPublishAudit(Base):
+    """Prompt 人工发布审计表，记录一次候选版本替换线上版本的审批事实。"""
+
+    __tablename__ = "ai_prompt_publish_audit"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+        comment="数据库自增主键",
+    )
+    publish_id: Mapped[str] = mapped_column(
+        String(64),
+        unique=True,
+        index=True,
+        comment="Prompt 发布业务唯一 ID",
+    )
+    gate_id: Mapped[str] = mapped_column(
+        String(64),
+        index=True,
+        comment="本次发布依据的评测门禁 ID",
+    )
+    prompt_id: Mapped[str] = mapped_column(
+        String(64),
+        index=True,
+        comment="被发布的候选 Prompt ID",
+    )
+    prompt_name: Mapped[str] = mapped_column(
+        String(64),
+        index=True,
+        comment="业务 Prompt 名称，例如 work_order_analysis",
+    )
+    candidate_prompt_version: Mapped[str] = mapped_column(
+        String(32),
+        comment="本次发布的候选 Prompt 版本",
+    )
+    previous_prompt_version: Mapped[str | None] = mapped_column(
+        String(32),
+        nullable=True,
+        comment="发布前线上 active Prompt 版本；首次发布时为空",
+    )
+    gate_decision: Mapped[str] = mapped_column(
+        String(32),
+        comment="发布时 Gate 结论：pass 或 manual_review",
+    )
+    approval_note: Mapped[str] = mapped_column(
+        Text,
+        comment="人工批准说明，记录性能或业务权衡依据",
+    )
+    approved_by: Mapped[str] = mapped_column(
+        String(64),
+        comment="批准人标识；接入认证后应取自登录用户",
+    )
+    published_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+        comment="实际完成状态切换的时间",
+    )
+
+
+class AiPromptRollbackAudit(Base):
+    """Prompt 人工回滚审计表，记录线上版本异常后的恢复操作。"""
+
+    __tablename__ = "ai_prompt_rollback_audit"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+        comment="数据库自增主键",
+    )
+    rollback_id: Mapped[str] = mapped_column(
+        String(64),
+        unique=True,
+        index=True,
+        comment="Prompt 回滚业务唯一 ID",
+    )
+    publish_id: Mapped[str] = mapped_column(
+        String(64),
+        unique=True,
+        index=True,
+        comment="被回滚的原发布审计 ID；一条发布记录仅允许回滚一次",
+    )
+    prompt_name: Mapped[str] = mapped_column(
+        String(64),
+        index=True,
+        comment="业务 Prompt 名称，例如 work_order_analysis",
+    )
+    rolled_back_prompt_version: Mapped[str] = mapped_column(
+        String(32),
+        comment="被下线的当前 active Prompt 版本",
+    )
+    restored_prompt_version: Mapped[str] = mapped_column(
+        String(32),
+        comment="被恢复为 active 的历史 Prompt 版本",
+    )
+    rollback_reason: Mapped[str] = mapped_column(
+        Text,
+        comment="人工回滚原因，例如线上质量或延迟异常",
+    )
+    rolled_back_by: Mapped[str] = mapped_column(
+        String(64),
+        comment="执行回滚的人员标识；接入认证后应取自登录用户",
+    )
+    rolled_back_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+        comment="实际完成版本状态切换的时间",
+    )

@@ -19,6 +19,8 @@ from day04_app.schemas.chat_schema import (
     AiCallLogPageResponse,
     AiEvalDatasetItem,
     AiEvalDatasetPageResponse,
+    AiEvalGateDecisionItem,
+    AiEvalGateDecisionPageResponse,
     AiEvalCaseResultItem,
     AiEvalCaseResultPageResponse,
     AiEvalRunItem,
@@ -29,6 +31,10 @@ from day04_app.schemas.chat_schema import (
     AiFailureSamplePageResponse,
     AiPromptVersionItem,
     AiPromptVersionPageResponse,
+    AiPromptPublishAuditItem,
+    AiPromptPublishAuditPageResponse,
+    AiPromptRollbackAuditItem,
+    AiPromptRollbackAuditPageResponse,
     AsyncWorkOrderAnalysisTaskRequest,
     AsyncWorkOrderEvalTaskRequest,
     AsyncSessionChatTaskRequest,
@@ -39,7 +45,11 @@ from day04_app.schemas.chat_schema import (
     ChatRequest,
     ChatResponse,
     ChatSessionItem,
+    ConvertFailureSampleToEvalSampleRequest,
     CreateSessionResponse,
+    EvalGateCompareRequest,
+    PublishPromptVersionRequest,
+    RollbackPromptVersionRequest,
     RefreshSessionSummaryResponse,
     SessionChatRequest,
     SessionListResponse,
@@ -62,8 +72,19 @@ from day04_app.services.async_task_service import (
     prepare_task_retry,
 )
 from day04_app.services.call_log_service import create_call_log, list_call_logs
-from day04_app.services.failure_sample_service import create_failure_sample, list_failure_samples
+from day04_app.services.failure_sample_service import (
+    convert_failure_sample_to_eval_sample,
+    create_failure_sample,
+    list_failure_samples,
+)
 from day04_app.services.eval_query_service import list_eval_case_results, list_eval_runs
+from day04_app.services.eval_gate_service import create_eval_gate_decision, list_eval_gate_decisions
+from day04_app.services.prompt_publish_service import (
+    list_prompt_publish_audits,
+    list_prompt_rollback_audits,
+    publish_prompt_version,
+    rollback_prompt_version,
+)
 from day04_app.services.eval_master_service import (
     list_eval_datasets,
     list_eval_samples_page,
@@ -175,7 +196,7 @@ def to_failure_sample_item(sample) -> AiFailureSampleItem:
     )
 
 
-def parse_json_or_none(json_text: str | None) -> dict | None:
+def parse_json_or_none(json_text: str | None) -> dict | list | None:
     if not json_text:
         return None
     try:
@@ -199,6 +220,21 @@ def to_eval_run_item(eval_run) -> AiEvalRunItem:
         avg_cost_ms=eval_run.avg_cost_ms,
         metrics=parse_json_or_none(eval_run.metrics_json),
         created_at=eval_run.created_at.isoformat(timespec="seconds"),
+    )
+
+
+def to_eval_gate_decision_item(gate_decision) -> AiEvalGateDecisionItem:
+    return AiEvalGateDecisionItem(
+        gate_id=gate_decision.gate_id,
+        baseline_run_id=gate_decision.baseline_run_id,
+        candidate_run_id=gate_decision.candidate_run_id,
+        prompt_name=gate_decision.prompt_name,
+        dataset_version=gate_decision.dataset_version,
+        decision=gate_decision.decision,
+        comparison=parse_json_or_none(gate_decision.comparison_json) or {},
+        reasons=parse_json_or_none(gate_decision.reason_json) or [],
+        rule_snapshot=parse_json_or_none(gate_decision.rule_snapshot_json) or {},
+        created_at=gate_decision.created_at.isoformat(timespec="seconds"),
     )
 
 
@@ -236,6 +272,34 @@ def to_prompt_version_item(prompt) -> AiPromptVersionItem:
         created_by=prompt.created_by,
         created_at=prompt.created_at.isoformat(timespec="seconds"),
         updated_at=prompt.updated_at.isoformat(timespec="seconds"),
+    )
+
+
+def to_prompt_publish_audit_item(audit) -> AiPromptPublishAuditItem:
+    return AiPromptPublishAuditItem(
+        publish_id=audit.publish_id,
+        gate_id=audit.gate_id,
+        prompt_id=audit.prompt_id,
+        prompt_name=audit.prompt_name,
+        candidate_prompt_version=audit.candidate_prompt_version,
+        previous_prompt_version=audit.previous_prompt_version,
+        gate_decision=audit.gate_decision,
+        approval_note=audit.approval_note,
+        approved_by=audit.approved_by,
+        published_at=audit.published_at.isoformat(timespec="seconds"),
+    )
+
+
+def to_prompt_rollback_audit_item(audit) -> AiPromptRollbackAuditItem:
+    return AiPromptRollbackAuditItem(
+        rollback_id=audit.rollback_id,
+        publish_id=audit.publish_id,
+        prompt_name=audit.prompt_name,
+        rolled_back_prompt_version=audit.rolled_back_prompt_version,
+        restored_prompt_version=audit.restored_prompt_version,
+        rollback_reason=audit.rollback_reason,
+        rolled_back_by=audit.rolled_back_by,
+        rolled_back_at=audit.rolled_back_at.isoformat(timespec="seconds"),
     )
 
 
@@ -473,6 +537,34 @@ def list_ai_failure_samples(
     )
 
 
+@router.post(
+    "/failure-samples/{sample_id}/convert-to-eval-sample",
+    response_model=ApiResponse[AiEvalSampleItem],
+    summary="将失败样本转入评测样本库",
+)
+def convert_ai_failure_sample_to_eval_sample(
+    sample_id: str,
+    request_body: ConvertFailureSampleToEvalSampleRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[AiEvalSampleItem]:
+    # expected 必须来自人工标注，不能让模型自动生成，否则评测会失去“标准答案”的意义。
+    eval_sample = convert_failure_sample_to_eval_sample(
+        db,
+        failure_sample_id=sample_id,
+        dataset_id=request_body.dataset_id,
+        dataset_version=request_body.dataset_version,
+        sample_type=request_body.sample_type,
+        input_text=request_body.input_text,
+        expected=request_body.expected.model_dump(),
+    )
+    return success(
+        to_eval_sample_item(eval_sample),
+        message="失败样本已转入评测样本库",
+        trace_id=request.state.trace_id,
+    )
+
+
 @router.get(
     "/prompt-versions",
     response_model=ApiResponse[AiPromptVersionPageResponse],
@@ -499,6 +591,113 @@ def list_ai_prompt_versions(
             page=page,
             page_size=page_size,
             items=[to_prompt_version_item(prompt) for prompt in prompts],
+        ),
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.post(
+    "/prompt-versions/{prompt_id}/publish",
+    response_model=ApiResponse[AiPromptPublishAuditItem],
+    summary="人工批准发布候选 Prompt 版本",
+)
+def publish_ai_prompt_version(
+    prompt_id: str,
+    request_body: PublishPromptVersionRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[AiPromptPublishAuditItem]:
+    audit = publish_prompt_version(
+        db,
+        prompt_id=prompt_id,
+        gate_id=request_body.gate_id,
+        approval_note=request_body.approval_note,
+        approved_by=request_body.approved_by,
+    )
+    return success(
+        to_prompt_publish_audit_item(audit),
+        message="Prompt 已人工批准发布，旧 active 版本已归档",
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.get(
+    "/prompt-publish-audits",
+    response_model=ApiResponse[AiPromptPublishAuditPageResponse],
+    summary="分页查询 Prompt 发布审计记录",
+)
+def list_ai_prompt_publish_audits(
+    request: Request,
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    prompt_name: str | None = Query(None, description="Prompt 名称，例如 work_order_analysis"),
+    db: Session = Depends(get_db),
+) -> ApiResponse[AiPromptPublishAuditPageResponse]:
+    audits, total = list_prompt_publish_audits(
+        db,
+        page=page,
+        page_size=page_size,
+        prompt_name=prompt_name,
+    )
+    return success(
+        AiPromptPublishAuditPageResponse(
+            total=total,
+            page=page,
+            page_size=page_size,
+            items=[to_prompt_publish_audit_item(audit) for audit in audits],
+        ),
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.post(
+    "/prompt-publish-audits/{publish_id}/rollback",
+    response_model=ApiResponse[AiPromptRollbackAuditItem],
+    summary="人工回滚 Prompt 到原线上版本",
+)
+def rollback_ai_prompt_version(
+    publish_id: str,
+    request_body: RollbackPromptVersionRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[AiPromptRollbackAuditItem]:
+    audit = rollback_prompt_version(
+        db,
+        publish_id=publish_id,
+        rollback_reason=request_body.rollback_reason,
+        rolled_back_by=request_body.rolled_back_by,
+    )
+    return success(
+        to_prompt_rollback_audit_item(audit),
+        message="Prompt 已回滚到原线上版本，当前版本已归档",
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.get(
+    "/prompt-rollback-audits",
+    response_model=ApiResponse[AiPromptRollbackAuditPageResponse],
+    summary="分页查询 Prompt 回滚审计记录",
+)
+def list_ai_prompt_rollback_audits(
+    request: Request,
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    prompt_name: str | None = Query(None, description="Prompt 名称，例如 work_order_analysis"),
+    db: Session = Depends(get_db),
+) -> ApiResponse[AiPromptRollbackAuditPageResponse]:
+    audits, total = list_prompt_rollback_audits(
+        db,
+        page=page,
+        page_size=page_size,
+        prompt_name=prompt_name,
+    )
+    return success(
+        AiPromptRollbackAuditPageResponse(
+            total=total,
+            page=page,
+            page_size=page_size,
+            items=[to_prompt_rollback_audit_item(audit) for audit in audits],
         ),
         trace_id=request.state.trace_id,
     )
@@ -628,6 +827,60 @@ def list_ai_eval_case_results(
             page=page,
             page_size=page_size,
             items=[to_eval_case_result_item(case_result) for case_result in case_results],
+        ),
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.post(
+    "/eval-gates/compare",
+    response_model=ApiResponse[AiEvalGateDecisionItem],
+    summary="比较基线与候选 Prompt 的评测准入结果",
+)
+def compare_ai_eval_gate(
+    request_body: EvalGateCompareRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[AiEvalGateDecisionItem]:
+    # Gate 只比较已有 Harness 报告，不重新调用模型，也不会重复消耗 Token。
+    gate_decision = create_eval_gate_decision(
+        db,
+        baseline_run_id=request_body.baseline_run_id,
+        candidate_run_id=request_body.candidate_run_id,
+    )
+    return success(
+        to_eval_gate_decision_item(gate_decision),
+        message="评测准入门禁已完成",
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.get(
+    "/eval-gates",
+    response_model=ApiResponse[AiEvalGateDecisionPageResponse],
+    summary="分页查询 Prompt 评测准入记录",
+)
+def list_ai_eval_gate_records(
+    request: Request,
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    prompt_name: str | None = Query(None, description="Prompt 名称，例如 work_order_analysis"),
+    decision: str | None = Query(None, description="门禁结论，例如 pass/reject/manual_review"),
+    db: Session = Depends(get_db),
+) -> ApiResponse[AiEvalGateDecisionPageResponse]:
+    gate_decisions, total = list_eval_gate_decisions(
+        db,
+        page=page,
+        page_size=page_size,
+        prompt_name=prompt_name,
+        decision=decision,
+    )
+    return success(
+        AiEvalGateDecisionPageResponse(
+            total=total,
+            page=page,
+            page_size=page_size,
+            items=[to_eval_gate_decision_item(item) for item in gate_decisions],
         ),
         trace_id=request.state.trace_id,
     )
