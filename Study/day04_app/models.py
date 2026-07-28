@@ -49,6 +49,130 @@ class ChatMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
+class KnowledgeDocument(Base):
+    """知识库文档主表，管理原始文件元数据和解析生命周期。"""
+
+    __tablename__ = "knowledge_document"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+        comment="数据库自增主键",
+    )
+    # 对外唯一业务 ID；Java、前端、异步解析任务都只能使用它定位文档。
+    document_id: Mapped[str] = mapped_column(
+        String(64),
+        unique=True,
+        index=True,
+        comment="知识库文档业务唯一 ID",
+    )
+    original_file_name: Mapped[str] = mapped_column(
+        String(255),
+        comment="用户上传时的原始文件名，仅用于展示和审计",
+    )
+    file_type: Mapped[str] = mapped_column(
+        String(16),
+        index=True,
+        comment="已校验的文件类型，例如 docx/pdf/xlsx",
+    )
+    # 保存相对存储键而非绝对路径，使开发、测试、生产环境的磁盘根目录可以不同。
+    storage_key: Mapped[str] = mapped_column(
+        String(255),
+        unique=True,
+        index=True,
+        comment="服务端原始文件存储键，不向调用方暴露物理路径",
+    )
+    file_size: Mapped[int] = mapped_column(
+        Integer,
+        comment="原始文件大小，单位字节",
+    )
+    content_sha256: Mapped[str] = mapped_column(
+        String(64),
+        index=True,
+        comment="原始文件内容 SHA-256，用于完整性校验和重复文件识别",
+    )
+    trace_id: Mapped[str | None] = mapped_column(
+        String(64),
+        index=True,
+        nullable=True,
+        comment="上传请求链路追踪 ID",
+    )
+    # uploaded/parsing/parsed/error；后续异步解析任务据此更新状态。
+    status: Mapped[str] = mapped_column(
+        String(32),
+        default="uploaded",
+        index=True,
+        comment="文档生命周期状态：uploaded/parsing/parsed/error",
+    )
+    parser_name: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        comment="最近一次成功执行的解析器名称",
+    )
+    parsed_segment_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        comment="最近一次成功解析得到的有效文本段数量",
+    )
+    error_message: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="解析失败时记录的错误原因",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+        comment="文档上传记录创建时间",
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+        onupdate=datetime.now,
+        comment="文档记录最后更新时间",
+    )
+
+
+class KnowledgeDocumentSegment(Base):
+    """文档解析后的原始文本段；Day19 会在此基础上生成检索切块。"""
+
+    __tablename__ = "knowledge_document_segment"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+        comment="数据库自增主键",
+    )
+    document_id: Mapped[str] = mapped_column(
+        String(64),
+        index=True,
+        comment="所属知识库文档业务 ID",
+    )
+    # 同一份文档内的稳定顺序，后续切块、引用来源和重解析对比都依赖它。
+    segment_index: Mapped[int] = mapped_column(
+        Integer,
+        comment="文本段在原文档中的从 0 开始顺序",
+    )
+    content: Mapped[str] = mapped_column(
+        Text,
+        comment="解析得到的原始文本内容，尚未经过 Day19 检索切块",
+    )
+    location: Mapped[str] = mapped_column(
+        String(255),
+        comment="可追溯的原文位置，例如 Paragraph:12 或 Table:2/Row:4",
+    )
+    metadata_json: Mapped[str] = mapped_column(
+        Text,
+        comment="解析器输出的来源补充元数据 JSON",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+        comment="文本段持久化时间",
+    )
+
+
 class ChatSessionSummary(Base):
     __tablename__ = "chat_session_summary"
 

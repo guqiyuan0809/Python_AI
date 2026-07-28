@@ -14,6 +14,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 ENV_PATH = Path(__file__).with_name(".env")
+PROJECT_ROOT = Path(__file__).resolve().parent
 load_dotenv(dotenv_path=ENV_PATH, override=False)
 
 
@@ -37,6 +38,10 @@ class Settings(BaseSettings):
     celery_broker_url: str | None = None
     async_task_timeout_minutes: int = 10
     async_task_max_retries: int = 3
+
+    # 原始知识库文件只允许落在服务端控制的目录，不能使用客户端传入的文件路径。
+    knowledge_upload_dir: Path = PROJECT_ROOT / "data" / "knowledge_uploads"
+    knowledge_upload_max_bytes: int = 20 * 1024 * 1024
 
     @property
     def database_url(self) -> str:

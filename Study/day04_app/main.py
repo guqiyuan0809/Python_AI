@@ -12,6 +12,7 @@ from day04_app.database import Base, engine
 from day04_app.exception_handlers import register_exception_handlers
 from day04_app.middlewares import register_middlewares
 from day04_app.routers.chat_router import router as chat_router
+from day04_app.routers.knowledge_router import router as knowledge_router
 from day04_app.routers.system_router import router as system_router
 from settings import settings
 
@@ -37,3 +38,4 @@ def startup_check() -> None:
 
 app.include_router(system_router)
 app.include_router(chat_router)
+app.include_router(knowledge_router)
