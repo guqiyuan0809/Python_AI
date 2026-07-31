@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     dashscope_api_key: str
     dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     dashscope_model: str = "qwen-plus"
+    # Chat 模型与 Embedding 模型职责不同；文档和查询必须使用同一 Embedding 模型版本。
+    dashscope_embedding_model: str = "text-embedding-v3"
+    milvus_host: str = "127.0.0.1"
+    milvus_port: int = 19530
+    # v2 增加 version_id 过滤字段；旧的空 Collection 保留，避免开发环境直接破坏性删除。
+    milvus_collection_name: str = "knowledge_chunk_vectors_v2"
 
     db_host: str = "127.0.0.1"
     db_port: int = 3306
@@ -49,6 +55,10 @@ class Settings(BaseSettings):
             f"mysql+pymysql://{self.db_user}:{self.db_password}"
             f"@{self.db_host}:{self.db_port}/{self.db_name}?charset=utf8mb4"
         )
+
+    @property
+    def milvus_uri(self) -> str:
+        return f"http://{self.milvus_host}:{self.milvus_port}"
 
     @property
     def celery_broker(self) -> str:

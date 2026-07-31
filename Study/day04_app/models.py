@@ -6,7 +6,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, Integer, String, Text
+from sqlalchemy import DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from day04_app.database import Base
@@ -67,6 +67,13 @@ class KnowledgeDocument(Base):
         index=True,
         comment="知识库文档业务唯一 ID",
     )
+    # 当前对检索请求生效的版本 ID；候选版本构建期间不修改它，避免服务短暂读不到旧知识。
+    active_version_id: Mapped[str | None] = mapped_column(
+        String(64),
+        index=True,
+        nullable=True,
+        comment="当前生效的文档版本业务 ID，切换完成后才更新",
+    )
     original_file_name: Mapped[str] = mapped_column(
         String(255),
         comment="用户上传时的原始文件名，仅用于展示和审计",
@@ -115,6 +122,33 @@ class KnowledgeDocument(Base):
         default=0,
         comment="最近一次成功解析得到的有效文本段数量",
     )
+    # not_started/chunking/chunked/error；独立于解析状态，避免“已解析”被切块过程覆盖。
+    chunk_status: Mapped[str] = mapped_column(
+        String(32),
+        default="not_started",
+        index=True,
+        comment="切块生命周期状态：not_started/chunking/chunked/error",
+    )
+    chunk_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        comment="最近一次成功切块得到的检索块数量",
+    )
+    chunk_config_json: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="最近一次成功切块使用的参数快照 JSON",
+    )
+    chunk_error_message: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="切块失败时记录的错误原因",
+    )
+    chunked_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+        comment="最近一次成功完成切块的时间",
+    )
     error_message: Mapped[str | None] = mapped_column(
         Text,
         nullable=True,
@@ -130,6 +164,161 @@ class KnowledgeDocument(Base):
         default=datetime.now,
         onupdate=datetime.now,
         comment="文档记录最后更新时间",
+    )
+
+
+class KnowledgeDocumentVersion(Base):
+    """知识库文档版本主表，支持候选索引构建、验证和无感切换。"""
+
+    __tablename__ = "knowledge_document_version"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+        comment="数据库自增主键",
+    )
+    version_id: Mapped[str] = mapped_column(
+        String(64),
+        unique=True,
+        index=True,
+        comment="文档版本业务唯一 ID",
+    )
+    document_id: Mapped[str] = mapped_column(
+        String(64),
+        index=True,
+        comment="所属知识库文档业务 ID",
+    )
+    version_number: Mapped[int] = mapped_column(
+        Integer,
+        comment="同一文档内递增版本号，从 1 开始",
+    )
+    # uploaded/parsing/parsed/chunking/chunked/indexing/indexed/active/retired/error。
+    status: Mapped[str] = mapped_column(
+        String(32),
+        index=True,
+        comment="版本索引生命周期状态，active 表示当前可被检索",
+    )
+    source_sha256: Mapped[str] = mapped_column(
+        String(64),
+        index=True,
+        comment="该版本原始文件内容 SHA-256",
+    )
+    rebuild_note: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+        comment="创建候选索引版本的变更说明，例如调整切块参数或更新原文件",
+    )
+    parser_name: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        comment="该版本解析时使用的解析器名称",
+    )
+    segment_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        comment="该版本解析出的原始文本段数量",
+    )
+    chunk_config_json: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="该版本切块参数快照 JSON",
+    )
+    chunk_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        comment="该版本生成的检索块数量",
+    )
+    embedding_model: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+        comment="该版本向量化使用的 Embedding 模型",
+    )
+    embedding_dimension: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="该版本 Embedding 向量维度",
+    )
+    vector_collection: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+        comment="该版本向量写入的 Milvus Collection 名称",
+    )
+    vector_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        comment="该版本已成功写入向量库的 Entity 数量",
+    )
+    error_message: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="版本构建失败时记录的错误原因",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+        comment="候选版本创建时间",
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+        onupdate=datetime.now,
+        comment="版本构建状态最后更新时间",
+    )
+    activated_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+        comment="版本切换为 active 的时间",
+    )
+
+
+class KnowledgeDocumentVersionActivationAudit(Base):
+    """文档索引版本发布审计，记录每次 active 指针切换的事实。"""
+
+    __tablename__ = "knowledge_document_version_activation_audit"
+    # MySQL 索引名上限为 64 字符；审计表名较长，因此使用稳定短名，不能依赖 SQLAlchemy 默认命名。
+    __table_args__ = (
+        Index("ix_kdvaa_doc", "document_id"),
+        Index("ix_kdvaa_active_ver", "activated_version_id"),
+        Index("ix_kdvaa_prev_ver", "previous_version_id"),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+        comment="数据库自增主键",
+    )
+    activation_id: Mapped[str] = mapped_column(
+        String(64),
+        unique=True,
+        comment="文档版本切换审计业务唯一 ID",
+    )
+    document_id: Mapped[str] = mapped_column(
+        String(64),
+        comment="所属知识库文档业务 ID",
+    )
+    activated_version_id: Mapped[str] = mapped_column(
+        String(64),
+        comment="本次切换为 active 的文档版本 ID",
+    )
+    previous_version_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        comment="切换前 active 的文档版本 ID，首次发布时为空",
+    )
+    activated_by: Mapped[str] = mapped_column(
+        String(64),
+        comment="执行切换的人员标识，接入认证后取自登录上下文",
+    )
+    activation_note: Mapped[str] = mapped_column(
+        Text,
+        comment="人工确认向量数量和检索质量后的切换说明",
+    )
+    activated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+        comment="版本切换完成时间",
     )
 
 
@@ -170,6 +359,57 @@ class KnowledgeDocumentSegment(Base):
         DateTime,
         default=datetime.now,
         comment="文本段持久化时间",
+    )
+
+
+class KnowledgeDocumentChunk(Base):
+    """面向 Embedding 与检索的文档文本切块。"""
+
+    __tablename__ = "knowledge_document_chunk"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+        comment="数据库自增主键",
+    )
+    # MySQL 与 Milvus 共用的跨库关联键；不能把数据库自增 id 当成对外业务 ID。
+    chunk_id: Mapped[str] = mapped_column(
+        String(64),
+        unique=True,
+        index=True,
+        comment="检索块业务唯一 ID，同时作为 Milvus Entity 主键",
+    )
+    version_id: Mapped[str] = mapped_column(
+        String(64),
+        index=True,
+        comment="所属文档索引版本业务 ID，用于新旧版本并存和向量检索过滤",
+    )
+    document_id: Mapped[str] = mapped_column(
+        String(64),
+        index=True,
+        comment="所属知识库文档业务 ID",
+    )
+    chunk_index: Mapped[int] = mapped_column(
+        Integer,
+        comment="检索块在文档内的从 0 开始顺序",
+    )
+    content: Mapped[str] = mapped_column(
+        Text,
+        comment="将参与 Embedding 与语义检索的文本内容",
+    )
+    char_count: Mapped[int] = mapped_column(
+        Integer,
+        comment="切块文本字符数，用于控制上下文与成本",
+    )
+    source_references_json: Mapped[str] = mapped_column(
+        Text,
+        comment="切块覆盖的原始文档段来源 JSON",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+        comment="检索块持久化时间",
     )
 
 

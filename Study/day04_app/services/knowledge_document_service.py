@@ -1,8 +1,9 @@
 """知识库文档主记录服务。"""
 
 from sqlalchemy.orm import Session
+from uuid import uuid4
 
-from day04_app.models import KnowledgeDocument
+from day04_app.models import KnowledgeDocument, KnowledgeDocumentVersion
 from day04_app.services.document_storage_service import StoredDocument
 
 
@@ -25,8 +26,16 @@ def create_uploaded_document(
         trace_id=trace_id,
         status=DOCUMENT_STATUS_UPLOADED,
     )
+    # 上传即创建 v1 候选版本；它还未解析、切块或写入 Milvus，因此绝不能直接标记为 active。
+    initial_version = KnowledgeDocumentVersion(
+        version_id=uuid4().hex,
+        document_id=stored_document.document_id,
+        version_number=1,
+        status=DOCUMENT_STATUS_UPLOADED,
+        source_sha256=stored_document.content_sha256,
+    )
     try:
-        db.add(document)
+        db.add_all([document, initial_version])
         db.commit()
         db.refresh(document)
         return document

@@ -9,7 +9,12 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from day04_app.common.exceptions import BusinessException
-from day04_app.models import KnowledgeDocument, KnowledgeDocumentSegment
+from day04_app.models import (
+    KnowledgeDocument,
+    KnowledgeDocumentChunk,
+    KnowledgeDocumentSegment,
+    KnowledgeDocumentVersion,
+)
 from day04_app.schemas.knowledge_schema import ParsedDocument
 from day04_app.services.document_parser_service import document_parser_registry
 from settings import settings
@@ -51,6 +56,12 @@ def parse_document_by_id(db: Session, document_id: str) -> tuple[KnowledgeDocume
     document = _find_document(db, document_id)
     if document.status == DOCUMENT_STATUS_PARSING:
         raise BusinessException(code=40951, message="文档正在解析中，请勿重复提交")
+    if document.active_version_id:
+        # 当前原始段尚未携带 version_id，直接重解析会删除 active 版本的 MySQL 来源数据。
+        raise BusinessException(
+            code=40968,
+            message="文档已有 active 版本，当前仅支持创建候选版本重切块；原文件更新需走后续完整版本化流程",
+        )
 
     document.status = DOCUMENT_STATUS_PARSING
     document.error_message = None
@@ -72,6 +83,12 @@ def parse_document_by_id(db: Session, document_id: str) -> tuple[KnowledgeDocume
                 KnowledgeDocumentSegment.document_id == document.document_id
             )
         )
+        # 原始段重新解析后，旧 chunk 已不再对应当前内容，必须在同一事务中失效。
+        db.execute(
+            delete(KnowledgeDocumentChunk).where(
+                KnowledgeDocumentChunk.document_id == document.document_id
+            )
+        )
         db.add_all(
             [
                 KnowledgeDocumentSegment(
@@ -87,7 +104,30 @@ def parse_document_by_id(db: Session, document_id: str) -> tuple[KnowledgeDocume
         document.status = DOCUMENT_STATUS_PARSED
         document.parser_name = parsed_document.parser_name
         document.parsed_segment_count = len(parsed_document.segments)
+        document.chunk_status = "not_started"
+        document.chunk_count = 0
+        document.chunk_config_json = None
+        document.chunk_error_message = None
+        document.chunked_at = None
         document.error_message = None
+        # 当前同步链路将解析结果写入最新候选版本；active 版本的切换仍必须在向量验证后单独执行。
+        latest_version = db.scalar(
+            select(KnowledgeDocumentVersion)
+            .where(KnowledgeDocumentVersion.document_id == document.document_id)
+            .order_by(KnowledgeDocumentVersion.version_number.desc())
+        )
+        if latest_version is None:
+            raise BusinessException(code=40955, message="文档尚未创建索引版本，不能保存解析结果")
+        latest_version.status = "parsed"
+        latest_version.parser_name = parsed_document.parser_name
+        latest_version.segment_count = len(parsed_document.segments)
+        latest_version.chunk_config_json = None
+        latest_version.chunk_count = 0
+        latest_version.vector_count = 0
+        latest_version.embedding_model = None
+        latest_version.embedding_dimension = None
+        latest_version.vector_collection = None
+        latest_version.error_message = None
         db.commit()
         db.refresh(document)
         return document, parsed_document
