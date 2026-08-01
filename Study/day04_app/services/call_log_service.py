@@ -25,6 +25,7 @@ def create_call_log(
     status: str = "success",
     error_type: str | None = None,
     error_message: str | None = None,
+    commit: bool = True,
 ) -> AiCallLog:
     # call_id 使用雪花 ID，后续可以跨 Java、Python、消息队列统一追踪。
     call_log = AiCallLog(
@@ -43,8 +44,9 @@ def create_call_log(
         error_message=error_message,
     )
     db.add(call_log)
-    db.commit()
-    db.refresh(call_log)
+    if commit:
+        db.commit()
+        db.refresh(call_log)
     return call_log
 
 

@@ -24,6 +24,7 @@ TASK_STATUS_ERROR = "error"
 OUTBOX_STATUS_PENDING = "pending"
 OUTBOX_STATUS_PUBLISHED = "published"
 OUTBOX_EVENT_SESSION_CHAT = "session_chat.execute"
+OUTBOX_EVENT_SESSION_RAG = "session_rag.execute"
 OUTBOX_EVENT_WORK_ORDER_ANALYSIS = "work_order_analysis.execute"
 OUTBOX_EVENT_WORK_ORDER_EVAL = "work_order_eval.execute"
 
@@ -37,6 +38,27 @@ def _build_session_chat_payload(task: AiAsyncTask, history_limit: int) -> str:
             "message": task.input_text,
             "trace_id": task.trace_id,
             "history_limit": history_limit,
+        },
+        ensure_ascii=False,
+    )
+
+
+def _build_session_rag_payload(
+    task: AiAsyncTask,
+    document_id: str,
+    retrieval_top_k: int,
+    max_context_characters: int,
+) -> str:
+    """持久化 RAG 检索参数快照，重试时不能依赖 HTTP 请求仍然存在。"""
+    return json.dumps(
+        {
+            "task_id": task.task_id,
+            "session_id": task.session_id,
+            "message": task.input_text,
+            "trace_id": task.trace_id,
+            "document_id": document_id,
+            "retrieval_top_k": retrieval_top_k,
+            "max_context_characters": max_context_characters,
         },
         ensure_ascii=False,
     )
@@ -86,6 +108,28 @@ def _create_outbox_event(
         task_id=task.task_id,
         event_type=OUTBOX_EVENT_SESSION_CHAT,
         payload=_build_session_chat_payload(task, history_limit),
+        status=OUTBOX_STATUS_PENDING,
+        available_at=datetime.now() + timedelta(seconds=delay_seconds),
+    )
+
+
+def _create_session_rag_outbox_event(
+    task: AiAsyncTask,
+    document_id: str,
+    retrieval_top_k: int,
+    max_context_characters: int,
+    delay_seconds: int = 0,
+) -> AiTaskOutbox:
+    return AiTaskOutbox(
+        event_id=next_snowflake_id(),
+        task_id=task.task_id,
+        event_type=OUTBOX_EVENT_SESSION_RAG,
+        payload=_build_session_rag_payload(
+            task,
+            document_id=document_id,
+            retrieval_top_k=retrieval_top_k,
+            max_context_characters=max_context_characters,
+        ),
         status=OUTBOX_STATUS_PENDING,
         available_at=datetime.now() + timedelta(seconds=delay_seconds),
     )
@@ -159,6 +203,51 @@ def create_async_session_chat_task(
     outbox_event = _create_outbox_event(task, history_limit)
 
     # 三类业务数据一起提交，避免出现“有任务但没有用户问题”的不完整记录。
+    db.add_all([user_message, task, outbox_event])
+    db.commit()
+    db.refresh(task)
+    db.refresh(outbox_event)
+    return task, outbox_event
+
+
+def create_async_session_rag_task(
+    db: Session,
+    session_id: str,
+    input_text: str,
+    trace_id: str | None,
+    model: str | None,
+    document_id: str,
+    retrieval_top_k: int,
+    max_context_characters: int,
+    max_retries: int,
+) -> tuple[AiAsyncTask, AiTaskOutbox]:
+    """一次事务提交用户消息、RAG 任务和 Outbox 投递事件。"""
+    user_message = ChatMessage(
+        message_id=uuid4().hex,
+        session_id=session_id,
+        trace_id=trace_id,
+        role="user",
+        content=input_text,
+        status="success",
+    )
+    task = AiAsyncTask(
+        task_id=next_snowflake_id(),
+        trace_id=trace_id,
+        session_id=session_id,
+        task_type="session_rag",
+        input_text=input_text,
+        model=model,
+        max_retries=max_retries,
+        status=TASK_STATUS_PENDING,
+    )
+    outbox_event = _create_session_rag_outbox_event(
+        task,
+        document_id=document_id,
+        retrieval_top_k=retrieval_top_k,
+        max_context_characters=max_context_characters,
+    )
+
+    # 用户看到的问题、可轮询任务和待投递消息必须同时存在或同时回滚。
     db.add_all([user_message, task, outbox_event])
     db.commit()
     db.refresh(task)
@@ -352,6 +441,7 @@ def mark_task_success(
     completion_tokens: int | None,
     total_tokens: int | None,
     cost_ms: int | None,
+    commit: bool = True,
 ) -> AiAsyncTask | None:
     task = get_async_task(db, task_id)
     # 如果超时扫描已把任务改成 error，晚到的 Worker 结果不能覆盖终态。
@@ -365,8 +455,9 @@ def mark_task_success(
     task.cost_ms = cost_ms
     task.error_type = None
     task.error_message = None
-    db.commit()
-    db.refresh(task)
+    if commit:
+        db.commit()
+        db.refresh(task)
     return task
 
 
@@ -420,6 +511,73 @@ def prepare_task_retry(
     db.refresh(task)
     db.refresh(outbox_event)
     return task, outbox_event
+
+
+def prepare_session_rag_task_retry(
+    db: Session,
+    task_id: str,
+    document_id: str,
+    retrieval_top_k: int,
+    max_context_characters: int,
+    delay_seconds: int = 0,
+) -> tuple[AiAsyncTask, AiTaskOutbox]:
+    """重试 RAG 时复用初次提交的检索参数，并生成新的延迟 Outbox 事件。"""
+    task = get_async_task(db, task_id)
+    if task.status != TASK_STATUS_ERROR:
+        raise BusinessException(code=40008, message="只有失败任务可以重试")
+    if task.retry_count >= task.max_retries:
+        raise BusinessException(code=40009, message="任务已达到最大重试次数，请人工处理")
+
+    task.status = TASK_STATUS_PENDING
+    task.message_id = None
+    task.broker_task_id = None
+    task.result_text = None
+    task.prompt_tokens = None
+    task.completion_tokens = None
+    task.total_tokens = None
+    task.cost_ms = None
+    task.error_type = None
+    task.error_message = None
+    task.retry_count += 1
+    outbox_event = _create_session_rag_outbox_event(
+        task,
+        document_id=document_id,
+        retrieval_top_k=retrieval_top_k,
+        max_context_characters=max_context_characters,
+        delay_seconds=delay_seconds,
+    )
+
+    db.add(outbox_event)
+    db.commit()
+    db.refresh(task)
+    db.refresh(outbox_event)
+    return task, outbox_event
+
+
+def get_session_rag_retry_parameters(
+    db: Session,
+    task_id: str,
+) -> tuple[str, int, int]:
+    """从已发布的 Outbox 快照恢复 RAG 重试参数，避免人工重试误投递为普通聊天任务。"""
+    latest_event = db.scalars(
+        select(AiTaskOutbox)
+        .where(
+            AiTaskOutbox.task_id == task_id,
+            AiTaskOutbox.event_type == OUTBOX_EVENT_SESSION_RAG,
+        )
+        .order_by(AiTaskOutbox.id.desc())
+        .limit(1)
+    ).first()
+    if latest_event is None:
+        raise BusinessException(code=50058, message="RAG 任务缺少 Outbox 参数快照，不能重试")
+    try:
+        payload = json.loads(latest_event.payload)
+        document_id = str(payload["document_id"])
+        retrieval_top_k = int(payload["retrieval_top_k"])
+        max_context_characters = int(payload["max_context_characters"])
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise BusinessException(code=50058, message="RAG 任务 Outbox 参数快照损坏，不能重试") from exc
+    return document_id, retrieval_top_k, max_context_characters
 
 
 def prepare_work_order_analysis_task_retry(

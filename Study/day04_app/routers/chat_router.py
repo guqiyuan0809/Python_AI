@@ -67,9 +67,11 @@ from day04_app.services.async_task_service import (
     create_async_session_chat_task,
     create_async_work_order_eval_task,
     create_async_work_order_analysis_task,
+    get_session_rag_retry_parameters,
     get_async_task,
     mark_timeout_tasks_error,
     prepare_task_retry,
+    prepare_session_rag_task_retry,
 )
 from day04_app.services.call_log_service import create_call_log, list_call_logs
 from day04_app.services.failure_sample_service import (
@@ -1370,7 +1372,21 @@ def retry_async_task(
     history_limit: int = Query(6, ge=0, le=20, description="重试时携带的历史消息数量"),
     db: Session = Depends(get_db),
 ) -> ApiResponse[AsyncTaskSubmitResponse]:
-    task, outbox_event = prepare_task_retry(db, task_id, history_limit=history_limit)
+    existing_task = get_async_task(db, task_id)
+    if existing_task.task_type == "session_rag":
+        document_id, retrieval_top_k, max_context_characters = get_session_rag_retry_parameters(
+            db,
+            task_id,
+        )
+        task, outbox_event = prepare_session_rag_task_retry(
+            db,
+            task_id=task_id,
+            document_id=document_id,
+            retrieval_top_k=retrieval_top_k,
+            max_context_characters=max_context_characters,
+        )
+    else:
+        task, outbox_event = prepare_task_retry(db, task_id, history_limit=history_limit)
     dispatch_outbox_event(db, outbox_event.event_id)
     return success(
         AsyncTaskSubmitResponse(

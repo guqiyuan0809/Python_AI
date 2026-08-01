@@ -141,6 +141,119 @@ class MilvusChunkSearchResponse(BaseModel):
     items: list[MilvusChunkSearchItem] = Field(default_factory=list, description="按相似度降序排列的 Top-K 结果")
 
 
+class RagContextPreviewRequest(BaseModel):
+    """Day21 RAG 上下文预览入参；仅用于观察检索资料如何进入模型 Prompt。"""
+
+    question: str = Field(..., min_length=1, max_length=1000, description="需要基于知识库回答的问题")
+    retrieval_top_k: int = Field(5, ge=1, le=10, description="先从 Milvus 召回的候选 chunk 数量")
+    max_context_characters: int = Field(
+        4000,
+        ge=1000,
+        le=12000,
+        description="资料包最大字符数；当前阶段按字符近似控制，后续升级为 Token 预算",
+    )
+
+
+class RagContextReference(BaseModel):
+    """RAG 资料包中一个可被模型引用的来源编号。"""
+
+    source_id: str = Field(..., description="模型回答中使用的引用编号，例如 S1")
+    document_id: str = Field(..., description="来源知识库文档业务 ID")
+    version_id: str = Field(..., description="来源文档的 active 版本 ID")
+    chunk_id: str = Field(..., description="来源检索块业务 ID")
+    chunk_index: int = Field(..., ge=0, description="来源 chunk 的文档内顺序")
+    score: float = Field(..., ge=-1, le=1, description="Milvus 返回的余弦相似度")
+    locations: list[str] = Field(default_factory=list, description="原文段落、页码或表格行等可追溯位置")
+
+
+class RagContextPreviewResponse(BaseModel):
+    """仅用于开发核验的 RAG 资料包，生产回答接口不会直接暴露内部 Prompt。"""
+
+    document_id: str = Field(..., description="检索的知识库文档业务 ID")
+    active_version_id: str = Field(..., description="本次检索使用的 active 文档版本 ID")
+    embedding_model: str = Field(..., description="查询向量使用的 Embedding 模型")
+    vector_dimension: int = Field(..., ge=1, description="查询向量维度")
+    retrieved_chunk_count: int = Field(..., ge=0, description="Milvus 实际召回并回填成功的 chunk 数量")
+    included_chunk_count: int = Field(..., ge=0, description="在上下文字符预算内实际写入资料包的 chunk 数量")
+    omitted_chunk_count: int = Field(..., ge=0, description="因上下文预算不足而未写入资料包的 chunk 数量")
+    context_char_count: int = Field(..., ge=0, description="最终资料包字符数，包含来源元数据")
+    references: list[RagContextReference] = Field(default_factory=list, description="资料编号与真实来源的映射")
+    context: str = Field(..., description="将作为后续模型调用输入的带编号资料包，仅供开发阶段检查")
+
+
+class RagAnswerRequest(BaseModel):
+    """Day21 RAG 问答请求；当前为单轮知识库问答，暂不混入会话历史改写。"""
+
+    question: str = Field(..., min_length=1, max_length=1000, description="用户需要基于知识库回答的问题")
+    retrieval_top_k: int = Field(5, ge=1, le=10, description="从 Milvus 召回的候选 chunk 数量")
+    max_context_characters: int = Field(4000, ge=1000, le=12000, description="送入模型的资料包最大字符数")
+
+
+class RagAnswerResponse(BaseModel):
+    """RAG 基线回答；references 仅包含模型实际引用且已校验存在的资料来源。"""
+
+    answer: str = Field(..., min_length=1, description="模型基于参考资料生成的回答，事实结论应带 [S1] 等引用")
+    references: list[RagContextReference] = Field(default_factory=list, description="模型实际引用的可追溯资料")
+    document_id: str = Field(..., description="检索的知识库文档业务 ID")
+    active_version_id: str = Field(..., description="本次检索使用的 active 文档版本 ID")
+    retrieved_chunk_count: int = Field(..., ge=0, description="Milvus 召回并成功回填的 chunk 数量")
+    included_chunk_count: int = Field(..., ge=0, description="实际放入模型资料包的 chunk 数量")
+    omitted_chunk_count: int = Field(..., ge=0, description="因上下文预算未进入模型资料包的 chunk 数量")
+    prompt_tokens: int | None = Field(None, ge=0, description="模型输入 Token 数")
+    completion_tokens: int | None = Field(None, ge=0, description="模型输出 Token 数")
+    total_tokens: int | None = Field(None, ge=0, description="本次模型调用总 Token 数")
+    cost_ms: int = Field(..., ge=0, description="仅模型生成阶段耗时，单位毫秒")
+
+
+class SessionRagAnswerRequest(BaseModel):
+    """会话内 RAG 问答请求；当前阶段不做查询改写，message 直接作为知识库检索问题。"""
+
+    document_id: str = Field(..., min_length=1, description="要检索的知识库文档业务 ID")
+    message: str = Field(..., min_length=1, max_length=1000, description="用户本次提问")
+    retrieval_top_k: int = Field(5, ge=1, le=10, description="Milvus 召回候选 chunk 数量")
+    max_context_characters: int = Field(4000, ge=1000, le=12000, description="送入模型的资料包最大字符数")
+
+
+class AsyncSessionRagTaskRequest(BaseModel):
+    """异步会话 RAG 入参；提交后由通用异步任务查询接口返回最终回答。"""
+
+    document_id: str = Field(..., min_length=1, description="要检索的知识库文档业务 ID")
+    message: str = Field(..., min_length=1, max_length=1000, description="用户本次提问")
+    retrieval_top_k: int = Field(5, ge=1, le=10, description="Milvus 召回候选 chunk 数量")
+    max_context_characters: int = Field(4000, ge=1000, le=12000, description="送入模型的资料包最大字符数")
+
+
+class AsyncRagTaskSubmitResponse(BaseModel):
+    """异步 RAG 提交结果；task_id 是前端与 Java 轮询的业务任务 ID。"""
+
+    task_id: str = Field(..., description="异步任务业务 ID")
+    status: str = Field(..., description="初始状态，正常为 pending")
+
+
+class SessionRagAnswerResponse(RagAnswerResponse):
+    """会话 RAG 回答，额外返回消息 ID 供前端渲染并回查引用。"""
+
+    session_id: str = Field(..., description="所属会话业务 ID")
+    user_message_id: str = Field(..., description="本次已持久化的用户消息 ID")
+    assistant_message_id: str = Field(..., description="本次已持久化的 RAG 回答消息 ID")
+
+
+class RagAnswerReferenceItem(RagContextReference):
+    """持久化后的 RAG 回答引用记录。"""
+
+    reference_id: str = Field(..., description="引用记录业务 ID")
+    assistant_message_id: str = Field(..., description="产生本条引用的 assistant 消息 ID")
+    created_at: str = Field(..., description="引用记录创建时间")
+
+
+class RagAnswerReferenceListResponse(BaseModel):
+    """查询某条会话 RAG 回答引用的响应。"""
+
+    session_id: str = Field(..., description="所属会话业务 ID")
+    assistant_message_id: str = Field(..., description="RAG 回答消息 ID")
+    items: list[RagAnswerReferenceItem] = Field(default_factory=list, description="该回答实际使用的资料来源")
+
+
 class CreateDocumentVersionRequest(BaseModel):
     """创建候选索引版本的请求；当前复用已解析原文，仅用于调整切块和向量索引。"""
 

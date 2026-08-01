@@ -6,7 +6,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, Index, Integer, String, Text
+from sqlalchemy import DateTime, Float, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from day04_app.database import Base
@@ -47,6 +47,71 @@ class ChatMessage(Base):
     error_type: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class AiRagAnswerReference(Base):
+    """RAG 回答实际引用的知识来源快照，独立于聊天正文以支持审计和前端回溯。"""
+
+    __tablename__ = "ai_rag_answer_reference"
+    __table_args__ = (
+        UniqueConstraint("reference_id", name="uk_airar_ref_id"),
+        UniqueConstraint("assistant_message_id", "source_id", name="uk_airar_msg_source"),
+        Index("ix_airar_session", "session_id"),
+        Index("ix_airar_assistant", "assistant_message_id"),
+        Index("ix_airar_doc_ver", "document_id", "version_id"),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+        comment="数据库自增主键",
+    )
+    reference_id: Mapped[str] = mapped_column(
+        String(64),
+        comment="RAG 回答引用记录业务唯一 ID",
+    )
+    session_id: Mapped[str] = mapped_column(
+        String(64),
+        comment="所属会话业务 ID",
+    )
+    assistant_message_id: Mapped[str] = mapped_column(
+        String(64),
+        comment="产生该引用的 assistant 消息业务 ID",
+    )
+    source_id: Mapped[str] = mapped_column(
+        String(16),
+        comment="模型回答中的资料编号，例如 S1",
+    )
+    document_id: Mapped[str] = mapped_column(
+        String(64),
+        comment="引用知识库文档业务 ID",
+    )
+    version_id: Mapped[str] = mapped_column(
+        String(64),
+        comment="引用时生效的知识库文档版本 ID",
+    )
+    chunk_id: Mapped[str] = mapped_column(
+        String(64),
+        comment="引用的知识库检索块业务 ID",
+    )
+    chunk_index: Mapped[int] = mapped_column(
+        Integer,
+        comment="引用 chunk 在文档版本内的顺序",
+    )
+    score: Mapped[float] = mapped_column(
+        Float,
+        comment="本次检索时 Milvus 返回的相似度分数快照",
+    )
+    locations_json: Mapped[str] = mapped_column(
+        Text,
+        comment="引用来源位置快照 JSON，例如段落或页码",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+        comment="引用记录创建时间",
+    )
 
 
 class KnowledgeDocument(Base):

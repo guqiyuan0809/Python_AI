@@ -1,4 +1,6 @@
-"""知识库文件上传接口。"""
+"""知识库文件上传、索引与 RAG 问答接口。"""
+
+import time
 
 from fastapi import APIRouter, Depends, File, Request, UploadFile
 from sqlalchemy.orm import Session
@@ -19,6 +21,15 @@ from day04_app.schemas.knowledge_schema import (
     InMemoryChunkSearchResponse,
     MilvusChunkSearchRequest,
     MilvusChunkSearchResponse,
+    RagContextPreviewRequest,
+    RagContextPreviewResponse,
+    RagAnswerRequest,
+    RagAnswerResponse,
+    RagAnswerReferenceListResponse,
+    AsyncRagTaskSubmitResponse,
+    AsyncSessionRagTaskRequest,
+    SessionRagAnswerRequest,
+    SessionRagAnswerResponse,
     CreateDocumentVersionRequest,
     CreateDocumentVersionResponse,
     VersionChunkResponse,
@@ -26,6 +37,16 @@ from day04_app.schemas.knowledge_schema import (
 from day04_app.services.knowledge_embedding_service import compare_text_embeddings
 from day04_app.services.knowledge_in_memory_search_service import search_document_chunks_in_memory
 from day04_app.services.knowledge_milvus_search_service import search_active_document_chunks
+from day04_app.services.rag_context_service import build_rag_context, generate_rag_answer
+from day04_app.services.session_rag_service import (
+    answer_session_with_rag,
+    list_session_rag_answer_references,
+)
+from day04_app.services.async_task_service import create_async_session_rag_task
+from day04_app.services.outbox_dispatcher import dispatch_outbox_event
+from day04_app.services.session_service import get_session
+from day04_app.services.call_log_service import create_call_log
+from day04_app.common.exceptions import ModelCallException
 from day04_app.services.knowledge_vector_index_service import build_version_vector_index
 from day04_app.services.knowledge_document_version_service import activate_document_version
 from day04_app.services.knowledge_document_chunk_service import (
@@ -262,6 +283,233 @@ def search_document_chunks_by_milvus(
         message="Milvus Top-K 检索完成，已由 MySQL 回填 chunk 原文和来源",
         trace_id=request.state.trace_id,
     )
+
+
+@router.post(
+    "/documents/{document_id}/rag-context-preview",
+    response_model=ApiResponse[RagContextPreviewResponse],
+    summary="开发验证：预览 RAG 检索资料包与引用编号",
+)
+def preview_rag_context(
+    document_id: str,
+    request_body: RagContextPreviewRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[RagContextPreviewResponse]:
+    model, vector_dimension, active_version_id, items = search_active_document_chunks(
+        db,
+        document_id=document_id,
+        question=request_body.question,
+        top_k=request_body.retrieval_top_k,
+    )
+    context_result = build_rag_context(
+        items,
+        max_context_characters=request_body.max_context_characters,
+    )
+    return success(
+        RagContextPreviewResponse(
+            document_id=document_id,
+            active_version_id=active_version_id,
+            embedding_model=model,
+            vector_dimension=vector_dimension,
+            retrieved_chunk_count=len(items),
+            included_chunk_count=len(context_result.references),
+            omitted_chunk_count=context_result.omitted_chunk_count,
+            context_char_count=len(context_result.context),
+            references=[
+                reference.model_copy(update={"score": round(reference.score, 6)})
+                for reference in context_result.references
+            ],
+            context=context_result.context,
+        ),
+        message="RAG 资料包已组装完成，尚未调用聊天模型",
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.post(
+    "/documents/{document_id}/rag-answer",
+    response_model=ApiResponse[RagAnswerResponse],
+    summary="基于 active 知识库版本生成带引用的 RAG 回答",
+)
+def answer_with_rag(
+    document_id: str,
+    request_body: RagAnswerRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[RagAnswerResponse]:
+    model, _, active_version_id, items = search_active_document_chunks(
+        db,
+        document_id=document_id,
+        question=request_body.question,
+        top_k=request_body.retrieval_top_k,
+    )
+    context_result = build_rag_context(
+        items,
+        max_context_characters=request_body.max_context_characters,
+    )
+    start_time = time.perf_counter()
+    try:
+        generation = generate_rag_answer(
+            question=request_body.question,
+            context_result=context_result,
+        )
+        cost_ms = round((time.perf_counter() - start_time) * 1000)
+        # 无资料兜底没有发生模型调用，不应伪造一条成功的模型成本日志。
+        if generation.model:
+            create_call_log(
+                db,
+                call_type="rag_knowledge_answer",
+                trace_id=request.state.trace_id,
+                model=generation.model,
+                prompt_tokens=generation.prompt_tokens,
+                completion_tokens=generation.completion_tokens,
+                total_tokens=generation.total_tokens,
+                cost_ms=cost_ms,
+                status="success",
+            )
+        return success(
+            RagAnswerResponse(
+                answer=generation.answer,
+                references=[
+                    reference.model_copy(update={"score": round(reference.score, 6)})
+                    for reference in generation.references
+                ],
+                document_id=document_id,
+                active_version_id=active_version_id,
+                retrieved_chunk_count=len(items),
+                included_chunk_count=len(context_result.references),
+                omitted_chunk_count=context_result.omitted_chunk_count,
+                prompt_tokens=generation.prompt_tokens,
+                completion_tokens=generation.completion_tokens,
+                total_tokens=generation.total_tokens,
+                cost_ms=cost_ms,
+            ),
+            message="RAG 回答生成完成，引用来源已校验",
+            trace_id=request.state.trace_id,
+        )
+    except ModelCallException as exc:
+        cost_ms = round((time.perf_counter() - start_time) * 1000)
+        create_call_log(
+            db,
+            call_type="rag_knowledge_answer",
+            trace_id=request.state.trace_id,
+            model=model,
+            cost_ms=cost_ms,
+            status="error",
+            error_type=exc.error_type,
+            error_message=exc.message,
+        )
+        raise
+
+
+@router.post(
+    "/sessions/{session_id}/rag-answer",
+    response_model=ApiResponse[SessionRagAnswerResponse],
+    summary="在会话中生成带持久化引用的 RAG 回答",
+)
+def answer_session_with_rag_endpoint(
+    session_id: str,
+    request_body: SessionRagAnswerRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[SessionRagAnswerResponse]:
+    result = answer_session_with_rag(
+        db,
+        session_id=session_id,
+        document_id=request_body.document_id,
+        message=request_body.message,
+        trace_id=request.state.trace_id,
+        retrieval_top_k=request_body.retrieval_top_k,
+        max_context_characters=request_body.max_context_characters,
+    )
+    return success(
+        SessionRagAnswerResponse(
+            session_id=session_id,
+            user_message_id=result.user_message_id,
+            assistant_message_id=result.assistant_message_id,
+            answer=result.answer,
+            references=[
+                reference.model_copy(update={"score": round(reference.score, 6)})
+                for reference in result.references
+            ],
+            document_id=result.document_id,
+            active_version_id=result.active_version_id,
+            retrieved_chunk_count=result.retrieved_chunk_count,
+            included_chunk_count=result.included_chunk_count,
+            omitted_chunk_count=result.omitted_chunk_count,
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            total_tokens=result.total_tokens,
+            cost_ms=result.cost_ms,
+        ),
+        message="会话 RAG 回答生成完成，消息和引用已持久化",
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/rag-answer/async",
+    response_model=ApiResponse[AsyncRagTaskSubmitResponse],
+    summary="提交异步会话 RAG 任务",
+)
+def submit_async_session_rag(
+    session_id: str,
+    request_body: AsyncSessionRagTaskRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[AsyncRagTaskSubmitResponse]:
+    # 先验证会话，避免 MySQL 已落任务而 Worker 才发现 session_id 无效。
+    get_session(db, session_id)
+    task, outbox_event = create_async_session_rag_task(
+        db,
+        session_id=session_id,
+        input_text=request_body.message,
+        trace_id=request.state.trace_id,
+        model=settings.dashscope_model,
+        document_id=request_body.document_id,
+        retrieval_top_k=request_body.retrieval_top_k,
+        max_context_characters=request_body.max_context_characters,
+        max_retries=settings.async_task_max_retries,
+    )
+    # RabbitMQ 暂不可用时保持 pending，Beat 会继续扫描 Outbox 并补投。
+    dispatch_outbox_event(db, outbox_event.event_id)
+    return success(
+        AsyncRagTaskSubmitResponse(task_id=task.task_id, status=task.status),
+        message="异步会话 RAG 任务已提交",
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/messages/{assistant_message_id}/rag-references",
+    response_model=ApiResponse[RagAnswerReferenceListResponse],
+    summary="查询会话某条 RAG 回答实际引用的知识来源",
+)
+def get_session_rag_answer_references(
+    session_id: str,
+    assistant_message_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[RagAnswerReferenceListResponse]:
+    references = list_session_rag_answer_references(
+        db,
+        session_id=session_id,
+        assistant_message_id=assistant_message_id,
+    )
+    return success(
+        RagAnswerReferenceListResponse(
+            session_id=session_id,
+            assistant_message_id=assistant_message_id,
+            items=[
+                reference.model_copy(update={"score": round(reference.score, 6)})
+                for reference in references
+            ],
+        ),
+        trace_id=request.state.trace_id,
+    )
+
+
 @router.post(
     "/document-versions/{version_id}/vector-index",
     response_model=ApiResponse[DocumentVersionIndexResponse],
