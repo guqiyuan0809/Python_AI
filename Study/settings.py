@@ -28,10 +28,17 @@ class Settings(BaseSettings):
     dashscope_model: str = "qwen-plus"
     # Chat 模型与 Embedding 模型职责不同；文档和查询必须使用同一 Embedding 模型版本。
     dashscope_embedding_model: str = "text-embedding-v3"
+    # 精排模型独立于 Chat/Embedding；默认使用 DashScope 的文本重排模型。
+    dashscope_rerank_model: str = "gte-rerank-v2"
+    dashscope_rerank_url: str = (
+        "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+    )
     milvus_host: str = "127.0.0.1"
     milvus_port: int = 19530
     # v2 增加 version_id 过滤字段；旧的空 Collection 保留，避免开发环境直接破坏性删除。
     milvus_collection_name: str = "knowledge_chunk_vectors_v2"
+    # RAG 无答案拒答阈值：Top1 分数低于该值时不调用聊天模型，直接返回依据不足。
+    rag_min_relevance_score: float | None = 0.25
 
     db_host: str = "127.0.0.1"
     db_port: int = 3306

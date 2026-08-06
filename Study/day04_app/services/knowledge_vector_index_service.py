@@ -74,7 +74,8 @@ def build_version_vector_index(
         # 先校验 Collection 契约，避免调完模型才发现维度或字段错误。
         ensure_knowledge_chunk_collection()
         model, vectors = generate_text_embeddings(
-            [chunk.content for chunk in chunks],
+            # 父子上下文化版本向量化的是“背景说明 + 原文”；历史版本保持 content，兼容已有索引。
+            [chunk.embedding_text or chunk.content for chunk in chunks],
             batch_size=VECTOR_UPSERT_BATCH_SIZE,
         )
         if len(vectors) != len(chunks):

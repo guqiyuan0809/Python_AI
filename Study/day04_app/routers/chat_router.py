@@ -68,10 +68,12 @@ from day04_app.services.async_task_service import (
     create_async_work_order_eval_task,
     create_async_work_order_analysis_task,
     get_session_rag_retry_parameters,
+    get_contextual_index_retry_parameters,
     get_async_task,
     mark_timeout_tasks_error,
     prepare_task_retry,
     prepare_session_rag_task_retry,
+    prepare_contextual_index_task_retry,
 )
 from day04_app.services.call_log_service import create_call_log, list_call_logs
 from day04_app.services.failure_sample_service import (
@@ -1374,7 +1376,14 @@ def retry_async_task(
 ) -> ApiResponse[AsyncTaskSubmitResponse]:
     existing_task = get_async_task(db, task_id)
     if existing_task.task_type == "session_rag":
-        document_id, retrieval_top_k, max_context_characters = get_session_rag_retry_parameters(
+        (
+            document_id,
+            retrieval_top_k,
+            max_context_characters,
+            use_reranker,
+            rerank_top_n,
+            score_threshold,
+        ) = get_session_rag_retry_parameters(
             db,
             task_id,
         )
@@ -1384,6 +1393,21 @@ def retry_async_task(
             document_id=document_id,
             retrieval_top_k=retrieval_top_k,
             max_context_characters=max_context_characters,
+            use_reranker=use_reranker,
+            rerank_top_n=rerank_top_n,
+            score_threshold=score_threshold,
+        )
+    elif existing_task.task_type == "knowledge_contextual_index":
+        version_id, context_model, context_max_tokens = get_contextual_index_retry_parameters(
+            db,
+            task_id,
+        )
+        task, outbox_event = prepare_contextual_index_task_retry(
+            db,
+            task_id=task_id,
+            version_id=version_id,
+            context_model=context_model,
+            context_max_tokens=context_max_tokens,
         )
     else:
         task, outbox_event = prepare_task_retry(db, task_id, history_limit=history_limit)

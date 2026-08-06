@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from pydantic import ValidationError
@@ -10,17 +11,25 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from day04_app.common.exceptions import BusinessException
-from day04_app.models import KnowledgeDocument, KnowledgeDocumentChunk, KnowledgeDocumentVersion
+from day04_app.models import (
+    KnowledgeDocument,
+    KnowledgeDocumentChunk,
+    KnowledgeDocumentParentChunk,
+    KnowledgeDocumentVersion,
+)
 from day04_app.schemas.knowledge_schema import ChunkSourceReference, MilvusChunkSearchItem
 from day04_app.services.knowledge_embedding_service import generate_text_embeddings
 from day04_app.services.milvus_vector_store_service import (
     EMBEDDING_DIMENSION,
     search_chunk_vectors,
 )
+from day04_app.services.knowledge_reranker_service import rerank_chunks
 from settings import settings
 
 
 VERSION_STATUS_ACTIVE = "active"
+VERSION_STATUS_INDEXED = "indexed"
+_QUERY_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+|[\u4e00-\u9fff]{2,}")
 
 
 def _load_source_references(source_references_json: str) -> list[ChunkSourceReference]:
@@ -44,34 +53,62 @@ def _get_hit_field(hit: dict[str, Any], field_name: str) -> Any:
     return None
 
 
-def search_active_document_chunks(
+def _build_rerank_document(item: MilvusChunkSearchItem, chunk: KnowledgeDocumentChunk) -> str:
+    """Reranker 可以读取检索背景，但回答和引用仍只能使用真实原文 content。"""
+    if chunk.contextual_summary:
+        return (
+            f"检索背景：{chunk.contextual_summary.strip()}\n\n"
+            f"原文子块：{item.content.strip()}"
+        )
+    return item.content
+
+
+def _keyword_coverage_score(question: str, document: str) -> float:
+    """用很轻的词面覆盖度补偿向量/Reranker 对短定义块的低估。"""
+    tokens: set[str] = set()
+    for token in _QUERY_TOKEN_PATTERN.findall(question):
+        normalized = token.lower().strip()
+        if len(normalized) < 2:
+            continue
+        tokens.add(normalized)
+        if re.fullmatch(r"[\u4e00-\u9fff]+", normalized):
+            tokens.update(normalized[index : index + 2] for index in range(len(normalized) - 1))
+    if not tokens:
+        return 0.0
+    normalized_document = document.lower()
+    matched = sum(1 for token in tokens if token in normalized_document)
+    return matched / len(tokens)
+
+
+def _intent_match_score(question: str, document: str) -> float:
+    """补充定义类/作用类问题的结构信号，避免短定义块被泛化总览块压低。"""
+    normalized_question = question.lower()
+    normalized_document = document.lower()
+    score = 0.0
+    if any(keyword in normalized_question for keyword in ("作用", "是什么", "什么是", "概念", "定义")):
+        if any(marker in normalized_document for marker in ("作用：", "核心作用", "概念：", "定义：")):
+            score += 0.7
+        if "存储对象" in normalized_document or ("对象" in normalized_document and "成员变量" in normalized_document):
+            score += 0.3
+    return min(score, 1.0)
+
+
+def _search_document_version_chunks(
     db: Session,
     *,
     document_id: str,
+    version: KnowledgeDocumentVersion,
     question: str,
     top_k: int,
+    use_reranker: bool = False,
+    rerank_top_n: int | None = None,
 ) -> tuple[str, int, str, list[MilvusChunkSearchItem]]:
-    """仅检索文档当前 active 版本，避免候选或已 retired 版本意外进入线上回答。"""
-    document = db.scalar(
-        select(KnowledgeDocument).where(KnowledgeDocument.document_id == document_id)
-    )
-    if document is None:
-        raise BusinessException(code=40451, message="知识库文档不存在")
-    if not document.active_version_id:
-        raise BusinessException(code=40960, message="文档尚未激活向量索引版本，不能执行真实检索")
-
-    active_version = db.scalar(
-        select(KnowledgeDocumentVersion).where(
-            KnowledgeDocumentVersion.version_id == document.active_version_id
-        )
-    )
-    if active_version is None or active_version.status != VERSION_STATUS_ACTIVE:
-        raise BusinessException(code=40961, message="文档 active 版本状态异常，拒绝执行检索")
-    if active_version.embedding_model != settings.dashscope_embedding_model:
+    """按已确认的单一版本检索并回填原文，避免两个版本的结果混在同一 Top-K。"""
+    if version.embedding_model != settings.dashscope_embedding_model:
         raise BusinessException(code=40962, message="当前查询 Embedding 模型与 active 索引版本不一致")
-    if active_version.embedding_dimension != EMBEDDING_DIMENSION:
+    if version.embedding_dimension != EMBEDDING_DIMENSION:
         raise BusinessException(code=40963, message="active 索引版本的向量维度与当前服务契约不一致")
-    if active_version.vector_collection != settings.milvus_collection_name:
+    if version.vector_collection != settings.milvus_collection_name:
         raise BusinessException(code=40964, message="active 索引版本不属于当前 Milvus Collection")
 
     # 查询文本只生成一次向量；候选 chunk 的向量早已离线写入 Milvus。
@@ -82,30 +119,43 @@ def search_active_document_chunks(
 
     try:
         hits = search_chunk_vectors(
-            version_id=active_version.version_id,
+            version_id=version.version_id,
             question_vector=question_vector,
-            top_k=top_k,
+            top_k=rerank_top_n if use_reranker and rerank_top_n else top_k,
         )
     except Exception as exc:
         raise BusinessException(code=50056, message="Milvus 向量检索失败，请查看服务日志") from exc
 
     hit_ids = [str(_get_hit_field(hit, "chunk_id")) for hit in hits if _get_hit_field(hit, "chunk_id")]
     if not hit_ids:
-        return model, len(question_vector), active_version.version_id, []
+        return model, len(question_vector), version.version_id, []
 
     chunks = list(
         db.scalars(
             select(KnowledgeDocumentChunk).where(
                 KnowledgeDocumentChunk.chunk_id.in_(hit_ids),
-                KnowledgeDocumentChunk.document_id == document.document_id,
-                KnowledgeDocumentChunk.version_id == active_version.version_id,
+                KnowledgeDocumentChunk.document_id == document_id,
+                KnowledgeDocumentChunk.version_id == version.version_id,
             )
         )
     )
     chunk_by_id = {chunk.chunk_id: chunk for chunk in chunks}
+    parent_by_id: dict[str, KnowledgeDocumentParentChunk] = {}
+    parent_ids = {chunk.parent_chunk_id for chunk in chunks if chunk.parent_chunk_id}
+    if parent_ids:
+        parents = list(
+            db.scalars(
+                select(KnowledgeDocumentParentChunk).where(
+                    KnowledgeDocumentParentChunk.parent_chunk_id.in_(parent_ids),
+                    KnowledgeDocumentParentChunk.version_id == version.version_id,
+                )
+            )
+        )
+        parent_by_id = {parent.parent_chunk_id: parent for parent in parents}
 
-    # 按 Milvus 分数顺序回填，不能使用MySQL  默认返回顺序，否则 Top-K 排名会丢失。
+    # 按 Milvus 分数顺序回填，不能使用 MySQL 默认返回顺序，否则 Top-K 排名会丢失。
     items: list[MilvusChunkSearchItem] = []
+    rerank_documents: list[str] = []
     for hit in hits:
         chunk_id = _get_hit_field(hit, "chunk_id")
         chunk = chunk_by_id.get(str(chunk_id)) if chunk_id else None
@@ -115,15 +165,120 @@ def search_active_document_chunks(
         score = hit.get("distance", hit.get("score"))
         if score is None:
             raise BusinessException(code=50056, message="Milvus 检索结果缺少相似度分数")
-        items.append(
-            MilvusChunkSearchItem(
-                document_id=chunk.document_id,
-                version_id=chunk.version_id,
-                chunk_id=chunk.chunk_id,
-                chunk_index=chunk.chunk_index,
-                score=max(-1.0, min(1.0, float(score))),
-                content=chunk.content,
-                source_references=_load_source_references(chunk.source_references_json),
-            )
+        parent = parent_by_id.get(chunk.parent_chunk_id) if chunk.parent_chunk_id else None
+        item = MilvusChunkSearchItem(
+            document_id=chunk.document_id,
+            version_id=chunk.version_id,
+            chunk_id=chunk.chunk_id,
+            chunk_index=chunk.chunk_index,
+            parent_chunk_id=chunk.parent_chunk_id,
+            score=max(-1.0, min(1.0, float(score))),
+            vector_score=max(-1.0, min(1.0, float(score))),
+            content=chunk.content,
+            source_references=_load_source_references(chunk.source_references_json),
+            parent_content=parent.content if parent else None,
+            parent_source_references=(
+                _load_source_references(parent.source_references_json) if parent else []
+            ),
         )
-    return model, len(question_vector), active_version.version_id, items
+        items.append(item)
+        rerank_documents.append(_build_rerank_document(item, chunk))
+    if use_reranker and items:
+        reranked = rerank_chunks(question, rerank_documents, len(rerank_documents))
+        reranked_items = [
+            (
+                result,
+                items[result.index],
+                rerank_documents[result.index],
+            )
+            for result in reranked
+        ]
+        ranked_items = sorted(
+            reranked_items,
+            key=lambda item: (
+                item[0].relevance_score * 0.65
+                + (item[1].vector_score or 0.0) * 0.15
+                + _keyword_coverage_score(question, item[2]) * 0.05
+                + _intent_match_score(question, item[2]) * 0.15
+            ),
+            reverse=True,
+        )
+        items = [
+            item.model_copy(
+                update={
+                    "score": result.relevance_score,
+                    "rerank_score": result.relevance_score,
+                }
+            )
+            for result, item, _ in ranked_items[:top_k]
+        ]
+    else:
+        items = items[:top_k]
+    return model, len(question_vector), version.version_id, items
+
+
+def search_active_document_chunks(
+    db: Session,
+    *,
+    document_id: str,
+    question: str,
+    top_k: int,
+    use_reranker: bool = False,
+    rerank_top_n: int | None = None,
+) -> tuple[str, int, str, list[MilvusChunkSearchItem]]:
+    """线上入口只检索当前 active 版本，不能由普通 RAG 请求指定候选版本。"""
+    document = db.scalar(
+        select(KnowledgeDocument).where(KnowledgeDocument.document_id == document_id)
+    )
+    if document is None:
+        raise BusinessException(code=40451, message="知识库文档不存在")
+    if not document.active_version_id:
+        raise BusinessException(code=40960, message="文档尚未激活向量索引版本，不能执行真实检索")
+    active_version = db.scalar(
+        select(KnowledgeDocumentVersion).where(
+            KnowledgeDocumentVersion.version_id == document.active_version_id
+        )
+    )
+    if active_version is None or active_version.status != VERSION_STATUS_ACTIVE:
+        raise BusinessException(code=40961, message="文档 active 版本状态异常，拒绝执行检索")
+    return _search_document_version_chunks(
+        db,
+        document_id=document_id,
+        version=active_version,
+        question=question,
+        top_k=top_k,
+        use_reranker=use_reranker,
+        rerank_top_n=rerank_top_n,
+    )
+
+
+def search_document_version_chunks_for_validation(
+    db: Session,
+    *,
+    document_id: str,
+    version_id: str,
+    question: str,
+    top_k: int,
+    use_reranker: bool = False,
+    rerank_top_n: int | None = None,
+) -> tuple[str, int, str, list[MilvusChunkSearchItem]]:
+    """仅供发布前验证：允许检索 indexed/active 版本，但绝不改动线上 active 指针。"""
+    version = db.scalar(
+        select(KnowledgeDocumentVersion).where(
+            KnowledgeDocumentVersion.document_id == document_id,
+            KnowledgeDocumentVersion.version_id == version_id,
+        )
+    )
+    if version is None:
+        raise BusinessException(code=40452, message="知识库文档版本不存在或不属于当前文档")
+    if version.status not in {VERSION_STATUS_INDEXED, VERSION_STATUS_ACTIVE}:
+        raise BusinessException(code=40968, message="只有 indexed 或 active 版本可以执行验证检索")
+    return _search_document_version_chunks(
+        db,
+        document_id=document_id,
+        version=version,
+        question=question,
+        top_k=top_k,
+        use_reranker=use_reranker,
+        rerank_top_n=rerank_top_n,
+    )

@@ -47,6 +47,9 @@ class SessionRagAnswerResult:
     retrieved_chunk_count: int
     included_chunk_count: int
     omitted_chunk_count: int
+    top_score: float | None
+    score_threshold: float | None
+    rejected_by_score_threshold: bool
     prompt_tokens: int | None
     completion_tokens: int | None
     total_tokens: int | None
@@ -116,6 +119,9 @@ def prepare_session_rag_context(
     message: str,
     retrieval_top_k: int,
     max_context_characters: int,
+    use_reranker: bool = False,
+    rerank_top_n: int = 20,
+    score_threshold: float | None = None,
 ) -> SessionRagRetrievalContext:
     """执行 RAG 检索与资料组装，不写会话消息，便于同步与异步入口共用。"""
     _, _, active_version_id, items = search_active_document_chunks(
@@ -123,10 +129,13 @@ def prepare_session_rag_context(
         document_id=document_id,
         question=message,
         top_k=retrieval_top_k,
+        use_reranker=use_reranker,
+        rerank_top_n=rerank_top_n,
     )
     context_result = build_rag_context(
         items,
         max_context_characters=max_context_characters,
+        score_threshold=score_threshold,
     )
     return SessionRagRetrievalContext(
         active_version_id=active_version_id,
@@ -144,6 +153,9 @@ def answer_session_with_rag(
     trace_id: str | None,
     retrieval_top_k: int,
     max_context_characters: int,
+    use_reranker: bool = False,
+    rerank_top_n: int = 20,
+    score_threshold: float | None = None,
 ) -> SessionRagAnswerResult:
     """同步完成一次会话 RAG：用户消息、回答、引用和调用日志均可按 trace 追溯。"""
     get_session(db, session_id)
@@ -170,6 +182,9 @@ def answer_session_with_rag(
             message=message,
             retrieval_top_k=retrieval_top_k,
             max_context_characters=max_context_characters,
+            use_reranker=use_reranker,
+            rerank_top_n=rerank_top_n,
+            score_threshold=score_threshold,
         )
     except (BusinessException, ModelCallException) as exc:
         update_message(
@@ -257,6 +272,9 @@ def answer_session_with_rag(
         retrieved_chunk_count=len(retrieval_context.items),
         included_chunk_count=len(retrieval_context.context_result.references),
         omitted_chunk_count=retrieval_context.context_result.omitted_chunk_count,
+        top_score=retrieval_context.context_result.top_score,
+        score_threshold=retrieval_context.context_result.score_threshold,
+        rejected_by_score_threshold=retrieval_context.context_result.rejected_by_score_threshold,
         prompt_tokens=generation.prompt_tokens,
         completion_tokens=generation.completion_tokens,
         total_tokens=generation.total_tokens,

@@ -427,6 +427,57 @@ class KnowledgeDocumentSegment(Base):
     )
 
 
+class KnowledgeDocumentParentChunk(Base):
+    """父块保存完整业务上下文；只回填给回答模型，不写入向量库参与粗排。"""
+
+    __tablename__ = "knowledge_document_parent_chunk"
+    __table_args__ = (
+        UniqueConstraint("parent_chunk_id", name="uk_kdpc_parent_chunk_id"),
+        UniqueConstraint("version_id", "parent_index", name="uk_kdpc_ver_parent_idx"),
+        Index("ix_kdpc_document_version", "document_id", "version_id"),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+        comment="数据库自增主键",
+    )
+    parent_chunk_id: Mapped[str] = mapped_column(
+        String(64),
+        comment="父块业务唯一 ID，被子块 parent_chunk_id 引用",
+    )
+    version_id: Mapped[str] = mapped_column(
+        String(64),
+        comment="所属文档索引版本业务 ID",
+    )
+    document_id: Mapped[str] = mapped_column(
+        String(64),
+        comment="所属知识库文档业务 ID",
+    )
+    parent_index: Mapped[int] = mapped_column(
+        Integer,
+        comment="父块在文档版本中的从 0 开始顺序",
+    )
+    content: Mapped[str] = mapped_column(
+        Text,
+        comment="完整父级原文，只能来自解析文档，不能使用模型生成内容替代",
+    )
+    char_count: Mapped[int] = mapped_column(
+        Integer,
+        comment="父块原文字符数，用于回答上下文预算控制",
+    )
+    source_references_json: Mapped[str] = mapped_column(
+        Text,
+        comment="父块覆盖的原始文档段来源 JSON",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+        comment="父块创建时间",
+    )
+
+
 class KnowledgeDocumentChunk(Base):
     """面向 Embedding 与检索的文档文本切块。"""
 
@@ -450,6 +501,12 @@ class KnowledgeDocumentChunk(Base):
         index=True,
         comment="所属文档索引版本业务 ID，用于新旧版本并存和向量检索过滤",
     )
+    parent_chunk_id: Mapped[str | None] = mapped_column(
+        String(64),
+        index=True,
+        nullable=True,
+        comment="父子切块模式下所属父块业务 ID；历史普通切块为空",
+    )
     document_id: Mapped[str] = mapped_column(
         String(64),
         index=True,
@@ -461,7 +518,17 @@ class KnowledgeDocumentChunk(Base):
     )
     content: Mapped[str] = mapped_column(
         Text,
-        comment="将参与 Embedding 与语义检索的文本内容",
+        comment="子块或历史普通块的真实原文；回答、引用和审计只能以此为事实依据",
+    )
+    contextual_summary: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="模型为子块生成的检索背景说明，仅用于提高召回，不能作为事实引用",
+    )
+    embedding_text: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="上下文化说明与真实原文拼接后的向量化输入；历史普通块为空时回退 content",
     )
     char_count: Mapped[int] = mapped_column(
         Integer,
@@ -475,6 +542,451 @@ class KnowledgeDocumentChunk(Base):
         DateTime,
         default=datetime.now,
         comment="检索块持久化时间",
+    )
+
+
+class KnowledgeRetrievalEvalDataset(Base):
+    """RAG 检索评测数据集：同一数据集固定对应一份文档和一组人工标注问题。"""
+
+    __tablename__ = "knowledge_retrieval_eval_dataset"
+    __table_args__ = (
+        UniqueConstraint("dataset_id", name="uk_kred_dataset_id"),
+        Index("ix_kred_doc", "document_id"),
+        Index("ix_kred_name_ver", "dataset_name", "dataset_version"),
+        Index("ix_kred_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+        comment="数据库自增主键",
+    )
+    dataset_id: Mapped[str] = mapped_column(
+        String(64),
+        comment="检索评测数据集业务唯一 ID",
+    )
+    dataset_name: Mapped[str] = mapped_column(
+        String(64),
+        comment="数据集名称，例如 jvm_knowledge_retrieval",
+    )
+    dataset_version: Mapped[str] = mapped_column(
+        String(64),
+        comment="数据集版本，例如 v1；标注调整应新建版本保留历史可复现性",
+    )
+    document_id: Mapped[str] = mapped_column(
+        String(64),
+        comment="评测范围内的知识库文档业务 ID；当前检索接口按单文档工作",
+    )
+    description: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+        comment="数据集用途和覆盖范围说明",
+    )
+    sample_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        comment="当前数据集已标注并可参与评测的样本数",
+    )
+    # draft 用于编辑样本，active 用于固定版本评测，archived 用于保留历史而停止使用。
+    status: Mapped[str] = mapped_column(
+        String(32),
+        default="draft",
+        comment="数据集状态：draft、active、archived",
+    )
+    created_by: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        comment="创建人标识；接入认证后由登录用户提供",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+        comment="数据集创建时间",
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+        onupdate=datetime.now,
+        comment="数据集最后修改时间",
+    )
+
+
+class KnowledgeRetrievalEvalSample(Base):
+    """一条 RAG 检索标注：以稳定原始段序号而非易变化的 chunk_id 作为标准答案。"""
+
+    __tablename__ = "knowledge_retrieval_eval_sample"
+    __table_args__ = (
+        UniqueConstraint("sample_id", name="uk_kres_sample_id"),
+        Index("ix_kres_dataset", "dataset_id"),
+        Index("ix_kres_type", "sample_type"),
+        Index("ix_kres_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+        comment="数据库自增主键",
+    )
+    sample_id: Mapped[str] = mapped_column(
+        String(64),
+        comment="检索评测样本业务唯一 ID",
+    )
+    dataset_id: Mapped[str] = mapped_column(
+        String(64),
+        comment="所属检索评测数据集业务 ID",
+    )
+    question: Mapped[str] = mapped_column(
+        Text,
+        comment="待检索的用户问题",
+    )
+    # normal/boundary/no_answer 描述覆盖场景，不表示问题是否答对。
+    sample_type: Mapped[str] = mapped_column(
+        String(32),
+        default="normal",
+        comment="样本类型：normal、boundary、no_answer",
+    )
+    expected_answerable: Mapped[int] = mapped_column(
+        Integer,
+        default=1,
+        comment="是否期望知识库可回答：1 是，0 否；no_answer 样本必须为 0",
+    )
+    # segment_index 是解析后原文的稳定定位锚点；chunk 重切后 ID 会改变，不能作为评测标准。
+    expected_segment_indexes_json: Mapped[str] = mapped_column(
+        Text,
+        comment="人工标注的期望原文段序号 JSON 数组，例如 [36, 37]",
+    )
+    expected_note: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="人工标注理由或期望命中依据说明",
+    )
+    status: Mapped[str] = mapped_column(
+        String(32),
+        default="active",
+        comment="样本状态：active 或 archived",
+    )
+    created_by: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        comment="标注人标识；接入认证后由登录用户提供",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+        comment="样本创建时间",
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+        onupdate=datetime.now,
+        comment="样本最后修改时间",
+    )
+
+
+class KnowledgeRetrievalEvalRun(Base):
+    """一次固定数据集、固定文档版本和固定 Top-K 的检索评测运行记录。"""
+
+    __tablename__ = "knowledge_retrieval_eval_run"
+    __table_args__ = (
+        UniqueConstraint("run_id", name="uk_krer_run_id"),
+        Index("ix_krer_dataset", "dataset_id"),
+        Index("ix_krer_doc_ver", "document_id", "document_version_id"),
+        Index("ix_krer_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+        comment="数据库自增主键",
+    )
+    run_id: Mapped[str] = mapped_column(
+        String(64),
+        comment="检索评测运行业务唯一 ID",
+    )
+    dataset_id: Mapped[str] = mapped_column(
+        String(64),
+        comment="本次使用的检索评测数据集业务 ID 快照",
+    )
+    document_id: Mapped[str] = mapped_column(
+        String(64),
+        comment="本次评测的知识库文档业务 ID",
+    )
+    document_version_id: Mapped[str] = mapped_column(
+        String(64),
+        comment="本次被测的文档索引版本业务 ID，可为 indexed 或 active 版本",
+    )
+    retrieval_top_k: Mapped[int] = mapped_column(
+        Integer,
+        comment="本次检索统一使用的 Top-K，指标只可在相同 K 下横向比较",
+    )
+    use_reranker: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        comment="是否启用 Reranker 精排：1 是，0 否",
+    )
+    rerank_top_n: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="启用精排时 Milvus 粗排候选数量；必须大于等于 retrieval_top_k",
+    )
+    reranker_model: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+        comment="启用精排时实际使用的 Reranker 模型",
+    )
+    score_threshold: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+        comment="可选的可回答分数阈值；仅用于计算无答案样本的误放行率",
+    )
+    embedding_model: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+        comment="本次实际调用的查询 Embedding 模型",
+    )
+    vector_dimension: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="本次查询向量维度，用于核对模型与索引契约",
+    )
+    status: Mapped[str] = mapped_column(
+        String(32),
+        default="running",
+        comment="运行状态：running、success、partial_success、error",
+    )
+    sample_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        comment="本次快照参与评测的 active 样本总数",
+    )
+    success_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        comment="成功完成检索并产生明细的样本数",
+    )
+    error_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        comment="检索异常的样本数；单条异常不阻断其余样本评测",
+    )
+    answerable_sample_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        comment="成功执行的可回答样本数，是 Recall@K 与 MRR 的分母",
+    )
+    answerable_hit_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        comment="Top-K 至少命中一个期望原始段的可回答样本数",
+    )
+    total_expected_segment_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        comment="可回答样本中人工标注的期望原始段总数，用于计算真正的 Recall@K",
+    )
+    total_hit_segment_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        comment="Top-K 实际命中的期望原始段去重总数，用于计算真正的 Recall@K",
+    )
+    total_retrieved_chunk_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        comment="可回答样本成功检索返回的 chunk 总数，用于计算 Precision@K",
+    )
+    total_relevant_retrieved_chunk_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        comment="可回答样本 Top-K 中包含期望原始段的 chunk 总数，用于计算 Precision@K",
+    )
+    hit_at_k: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+        comment="Hit@K：可回答样本中 Top-K 至少命中一个正确证据的样本比例",
+    )
+    recall_at_k: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+        comment="Recall@K：Top-K 命中的期望原始段数 / 期望原始段总数",
+    )
+    precision_at_k: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+        comment="Precision@K：Top-K 中正确 chunk 数 / 返回 chunk 总数",
+    )
+    mrr_at_k: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+        comment="可回答样本 MRR@K：首个正确证据排名倒数的平均值",
+    )
+    no_answer_sample_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        comment="成功执行的无答案样本数",
+    )
+    no_answer_false_positive_count: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="启用分数阈值时，被错误判为可回答的无答案样本数",
+    )
+    no_answer_false_positive_rate: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+        comment="启用分数阈值时的无答案误放行率",
+    )
+    no_answer_avg_top_score: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+        comment="无答案样本 Top-1 相似度均值，用于后续选择拒答阈值",
+    )
+    elapsed_ms: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="本次评测总耗时，单位毫秒",
+    )
+    error_message: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="运行级异常信息；单样本异常详见评测明细",
+    )
+    created_by: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        comment="发起评测的人员标识",
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+        comment="评测开始时间",
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+        comment="评测结束时间",
+    )
+
+
+class KnowledgeRetrievalEvalCaseResult(Base):
+    """一次运行中单条样本的命中明细，保存快照以支持历史复盘。"""
+
+    __tablename__ = "knowledge_retrieval_eval_case_result"
+    __table_args__ = (
+        UniqueConstraint("case_result_id", name="uk_krecr_case_id"),
+        UniqueConstraint("run_id", "sample_id", name="uk_krecr_run_sample"),
+        Index("ix_krecr_run", "run_id"),
+        Index("ix_krecr_sample", "sample_id"),
+        Index("ix_krecr_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+        comment="数据库自增主键",
+    )
+    case_result_id: Mapped[str] = mapped_column(
+        String(64),
+        comment="评测样本结果业务唯一 ID",
+    )
+    run_id: Mapped[str] = mapped_column(
+        String(64),
+        comment="所属检索评测运行业务 ID",
+    )
+    sample_id: Mapped[str] = mapped_column(
+        String(64),
+        comment="关联的评测样本业务 ID",
+    )
+    question_snapshot: Mapped[str] = mapped_column(
+        Text,
+        comment="运行时的问题快照，样本后续修改不影响历史复盘",
+    )
+    sample_type_snapshot: Mapped[str] = mapped_column(
+        String(32),
+        comment="运行时样本类型快照：normal、boundary、no_answer",
+    )
+    expected_answerable_snapshot: Mapped[int] = mapped_column(
+        Integer,
+        comment="运行时期望是否可回答快照：1 是，0 否",
+    )
+    expected_segment_indexes_json: Mapped[str] = mapped_column(
+        Text,
+        comment="运行时期望原始段序号 JSON 快照",
+    )
+    retrieved_segment_indexes_json: Mapped[str] = mapped_column(
+        Text,
+        comment="按 Milvus 排名展开去重后的实际召回原始段序号 JSON",
+    )
+    retrieved_chunks_json: Mapped[str] = mapped_column(
+        Text,
+        comment="实际召回 chunk 的 ID、排名、分数和来源段快照 JSON",
+    )
+    first_hit_rank: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="首个命中期望原始段的 chunk 排名，从 1 开始；未命中为空",
+    )
+    is_hit: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="可回答样本是否命中正确依据：1 是，0 否；无答案样本为空",
+    )
+    hit_segment_count: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="本样本 Top-K 命中的期望原始段去重数量；无答案样本为空",
+    )
+    expected_segment_count: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="本样本人工标注的期望原始段数量；无答案样本为空",
+    )
+    relevant_retrieved_chunk_count: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="本样本 Top-K 中包含期望原始段的 chunk 数量；无答案样本为空",
+    )
+    precision_at_k: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+        comment="本样本 Precision@K：正确 chunk 数 / 实际返回 chunk 数；无答案样本为空",
+    )
+    top_score: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+        comment="本条样本 Top-1 的 Milvus 相似度分数",
+    )
+    is_false_positive: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="无答案样本在本次阈值下是否被误判为可回答：1 是，0 否",
+    )
+    elapsed_ms: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="本条样本从查询向量化到召回回填的耗时，单位毫秒",
+    )
+    status: Mapped[str] = mapped_column(
+        String(32),
+        default="success",
+        comment="明细状态：success 或 error",
+    )
+    error_type: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+        comment="检索失败时的异常类型",
+    )
+    error_message: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="检索失败时的异常信息",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+        comment="评测明细创建时间",
     )
 
 

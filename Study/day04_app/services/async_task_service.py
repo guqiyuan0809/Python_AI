@@ -27,6 +27,7 @@ OUTBOX_EVENT_SESSION_CHAT = "session_chat.execute"
 OUTBOX_EVENT_SESSION_RAG = "session_rag.execute"
 OUTBOX_EVENT_WORK_ORDER_ANALYSIS = "work_order_analysis.execute"
 OUTBOX_EVENT_WORK_ORDER_EVAL = "work_order_eval.execute"
+OUTBOX_EVENT_KNOWLEDGE_CONTEXTUAL_INDEX = "knowledge_contextual_index.execute"
 
 
 def _build_session_chat_payload(task: AiAsyncTask, history_limit: int) -> str:
@@ -48,6 +49,9 @@ def _build_session_rag_payload(
     document_id: str,
     retrieval_top_k: int,
     max_context_characters: int,
+    use_reranker: bool,
+    rerank_top_n: int,
+    score_threshold: float | None,
 ) -> str:
     """持久化 RAG 检索参数快照，重试时不能依赖 HTTP 请求仍然存在。"""
     return json.dumps(
@@ -59,6 +63,9 @@ def _build_session_rag_payload(
             "document_id": document_id,
             "retrieval_top_k": retrieval_top_k,
             "max_context_characters": max_context_characters,
+            "use_reranker": use_reranker,
+            "rerank_top_n": rerank_top_n,
+            "score_threshold": score_threshold,
         },
         ensure_ascii=False,
     )
@@ -98,6 +105,25 @@ def _build_work_order_eval_payload(
     )
 
 
+def _build_contextual_index_payload(
+    task: AiAsyncTask,
+    version_id: str,
+    context_model: str | None,
+    context_max_tokens: int,
+) -> str:
+    """保存知识索引后台任务的参数快照，Worker 重试不依赖原 HTTP 请求。"""
+    return json.dumps(
+        {
+            "task_id": task.task_id,
+            "version_id": version_id,
+            "context_model": context_model,
+            "context_max_tokens": context_max_tokens,
+            "trace_id": task.trace_id,
+        },
+        ensure_ascii=False,
+    )
+
+
 def _create_outbox_event(
     task: AiAsyncTask,
     history_limit: int,
@@ -118,6 +144,9 @@ def _create_session_rag_outbox_event(
     document_id: str,
     retrieval_top_k: int,
     max_context_characters: int,
+    use_reranker: bool = False,
+    rerank_top_n: int = 20,
+    score_threshold: float | None = None,
     delay_seconds: int = 0,
 ) -> AiTaskOutbox:
     return AiTaskOutbox(
@@ -129,6 +158,9 @@ def _create_session_rag_outbox_event(
             document_id=document_id,
             retrieval_top_k=retrieval_top_k,
             max_context_characters=max_context_characters,
+            use_reranker=use_reranker,
+            rerank_top_n=rerank_top_n,
+            score_threshold=score_threshold,
         ),
         status=OUTBOX_STATUS_PENDING,
         available_at=datetime.now() + timedelta(seconds=delay_seconds),
@@ -166,6 +198,28 @@ def _create_work_order_eval_outbox_event(
             prompt_name=prompt_name,
             prompt_version=prompt_version,
             dataset_version=dataset_version,
+        ),
+        status=OUTBOX_STATUS_PENDING,
+        available_at=datetime.now() + timedelta(seconds=delay_seconds),
+    )
+
+
+def _create_contextual_index_outbox_event(
+    task: AiAsyncTask,
+    version_id: str,
+    context_model: str | None,
+    context_max_tokens: int,
+    delay_seconds: int = 0,
+) -> AiTaskOutbox:
+    return AiTaskOutbox(
+        event_id=next_snowflake_id(),
+        task_id=task.task_id,
+        event_type=OUTBOX_EVENT_KNOWLEDGE_CONTEXTUAL_INDEX,
+        payload=_build_contextual_index_payload(
+            task,
+            version_id=version_id,
+            context_model=context_model,
+            context_max_tokens=context_max_tokens,
         ),
         status=OUTBOX_STATUS_PENDING,
         available_at=datetime.now() + timedelta(seconds=delay_seconds),
@@ -220,6 +274,9 @@ def create_async_session_rag_task(
     retrieval_top_k: int,
     max_context_characters: int,
     max_retries: int,
+    use_reranker: bool = False,
+    rerank_top_n: int = 20,
+    score_threshold: float | None = None,
 ) -> tuple[AiAsyncTask, AiTaskOutbox]:
     """一次事务提交用户消息、RAG 任务和 Outbox 投递事件。"""
     user_message = ChatMessage(
@@ -245,6 +302,9 @@ def create_async_session_rag_task(
         document_id=document_id,
         retrieval_top_k=retrieval_top_k,
         max_context_characters=max_context_characters,
+        use_reranker=use_reranker,
+        rerank_top_n=rerank_top_n,
+        score_threshold=score_threshold,
     )
 
     # 用户看到的问题、可轮询任务和待投递消息必须同时存在或同时回滚。
@@ -290,6 +350,47 @@ def create_async_work_order_eval_task(
     )
 
     # 评测任务和 Outbox 在同一事务提交，避免出现有任务但没有 MQ 投递事件。
+    db.add_all([task, outbox_event])
+    db.commit()
+    db.refresh(task)
+    db.refresh(outbox_event)
+    return task, outbox_event
+
+
+def create_async_contextual_index_task(
+    db: Session,
+    *,
+    version_id: str,
+    trace_id: str | None,
+    context_model: str | None,
+    context_max_tokens: int,
+    max_retries: int,
+) -> tuple[AiAsyncTask, AiTaskOutbox]:
+    """创建知识库上下文化索引任务；它不是用户会话，因此使用 system_knowledge 会话标识。"""
+    input_text = json.dumps(
+        {
+            "version_id": version_id,
+            "context_model": context_model,
+            "context_max_tokens": context_max_tokens,
+        },
+        ensure_ascii=False,
+    )
+    task = AiAsyncTask(
+        task_id=next_snowflake_id(),
+        trace_id=trace_id,
+        session_id="system_knowledge",
+        task_type="knowledge_contextual_index",
+        input_text=input_text,
+        model=context_model,
+        max_retries=max_retries,
+        status=TASK_STATUS_PENDING,
+    )
+    outbox_event = _create_contextual_index_outbox_event(
+        task,
+        version_id=version_id,
+        context_model=context_model,
+        context_max_tokens=context_max_tokens,
+    )
     db.add_all([task, outbox_event])
     db.commit()
     db.refresh(task)
@@ -519,6 +620,9 @@ def prepare_session_rag_task_retry(
     document_id: str,
     retrieval_top_k: int,
     max_context_characters: int,
+    use_reranker: bool = False,
+    rerank_top_n: int = 20,
+    score_threshold: float | None = None,
     delay_seconds: int = 0,
 ) -> tuple[AiAsyncTask, AiTaskOutbox]:
     """重试 RAG 时复用初次提交的检索参数，并生成新的延迟 Outbox 事件。"""
@@ -544,6 +648,9 @@ def prepare_session_rag_task_retry(
         document_id=document_id,
         retrieval_top_k=retrieval_top_k,
         max_context_characters=max_context_characters,
+        use_reranker=use_reranker,
+        rerank_top_n=rerank_top_n,
+        score_threshold=score_threshold,
         delay_seconds=delay_seconds,
     )
 
@@ -557,7 +664,7 @@ def prepare_session_rag_task_retry(
 def get_session_rag_retry_parameters(
     db: Session,
     task_id: str,
-) -> tuple[str, int, int]:
+) -> tuple[str, int, int, bool, int, float | None]:
     """从已发布的 Outbox 快照恢复 RAG 重试参数，避免人工重试误投递为普通聊天任务。"""
     latest_event = db.scalars(
         select(AiTaskOutbox)
@@ -575,9 +682,48 @@ def get_session_rag_retry_parameters(
         document_id = str(payload["document_id"])
         retrieval_top_k = int(payload["retrieval_top_k"])
         max_context_characters = int(payload["max_context_characters"])
+        use_reranker = bool(payload.get("use_reranker", False))
+        rerank_top_n = int(payload.get("rerank_top_n", 20))
+        raw_score_threshold = payload.get("score_threshold")
+        score_threshold = (
+            float(raw_score_threshold) if raw_score_threshold is not None else None
+        )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise BusinessException(code=50058, message="RAG 任务 Outbox 参数快照损坏，不能重试") from exc
-    return document_id, retrieval_top_k, max_context_characters
+    return (
+        document_id,
+        retrieval_top_k,
+        max_context_characters,
+        use_reranker,
+        rerank_top_n,
+        score_threshold,
+    )
+
+
+def get_contextual_index_retry_parameters(
+    db: Session,
+    task_id: str,
+) -> tuple[str, str | None, int]:
+    """从最近一次上下文化 Outbox 快照恢复索引任务参数。"""
+    latest_event = db.scalars(
+        select(AiTaskOutbox)
+        .where(
+            AiTaskOutbox.task_id == task_id,
+            AiTaskOutbox.event_type == OUTBOX_EVENT_KNOWLEDGE_CONTEXTUAL_INDEX,
+        )
+        .order_by(AiTaskOutbox.id.desc())
+        .limit(1)
+    ).first()
+    if latest_event is None:
+        raise BusinessException(code=50063, message="上下文化索引任务缺少 Outbox 参数快照，不能重试")
+    try:
+        payload = json.loads(latest_event.payload)
+        version_id = str(payload["version_id"])
+        context_model = payload.get("context_model")
+        context_max_tokens = int(payload.get("context_max_tokens", 180))
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise BusinessException(code=50063, message="上下文化索引 Outbox 参数快照损坏，不能重试") from exc
+    return version_id, context_model, context_max_tokens
 
 
 def prepare_work_order_analysis_task_retry(
@@ -647,6 +793,46 @@ def prepare_work_order_eval_task_retry(
         delay_seconds=delay_seconds,
     )
 
+    db.add(outbox_event)
+    db.commit()
+    db.refresh(task)
+    db.refresh(outbox_event)
+    return task, outbox_event
+
+
+def prepare_contextual_index_task_retry(
+    db: Session,
+    task_id: str,
+    version_id: str,
+    context_model: str | None,
+    context_max_tokens: int,
+    delay_seconds: int = 0,
+) -> tuple[AiAsyncTask, AiTaskOutbox]:
+    """重试知识库上下文化索引任务，并保留其专用 Outbox 事件类型。"""
+    task = get_async_task(db, task_id)
+    if task.status != TASK_STATUS_ERROR:
+        raise BusinessException(code=40008, message="只有失败任务可以重试")
+    if task.retry_count >= task.max_retries:
+        raise BusinessException(code=40009, message="任务已达到最大重试次数，请人工处理")
+
+    task.status = TASK_STATUS_PENDING
+    task.message_id = None
+    task.broker_task_id = None
+    task.result_text = None
+    task.prompt_tokens = None
+    task.completion_tokens = None
+    task.total_tokens = None
+    task.cost_ms = None
+    task.error_type = None
+    task.error_message = None
+    task.retry_count += 1
+    outbox_event = _create_contextual_index_outbox_event(
+        task,
+        version_id=version_id,
+        context_model=context_model,
+        context_max_tokens=context_max_tokens,
+        delay_seconds=delay_seconds,
+    )
     db.add(outbox_event)
     db.commit()
     db.refresh(task)

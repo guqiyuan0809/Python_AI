@@ -13,11 +13,22 @@ from day04_app.common.exceptions import BusinessException
 from day04_app.models import (
     KnowledgeDocument,
     KnowledgeDocumentChunk,
+    KnowledgeDocumentParentChunk,
     KnowledgeDocumentSegment,
     KnowledgeDocumentVersion,
 )
-from day04_app.schemas.knowledge_schema import KnowledgeTextChunk, ParsedDocumentSegment
-from day04_app.services.text_chunker_service import ChunkingConfig, build_text_chunks
+from day04_app.schemas.knowledge_schema import (
+    KnowledgeParentTextChunk,
+    KnowledgeTextChunk,
+    ParentChildTextChunkBuildResult,
+    ParsedDocumentSegment,
+)
+from day04_app.services.text_chunker_service import (
+    ChunkingConfig,
+    ParentChildChunkingConfig,
+    build_parent_child_text_chunks,
+    build_text_chunks,
+)
 
 
 DOCUMENT_STATUS_PARSED = "parsed"
@@ -139,6 +150,8 @@ def chunk_document_version_by_id(
                 "max_characters": config.max_characters,
                 "overlap_characters": config.overlap_characters,
                 "boundary_search_characters": config.boundary_search_characters,
+                "min_chunk_characters": config.min_chunk_characters,
+                "semantic_overflow_characters": config.semantic_overflow_characters,
             },
             ensure_ascii=False,
         )
@@ -154,9 +167,12 @@ def chunk_document_version_by_id(
                 KnowledgeDocumentChunk(
                     chunk_id=uuid4().hex,
                     version_id=version.version_id,
+                    parent_chunk_id=None,
                     document_id=chunk.document_id,
                     chunk_index=chunk.chunk_index,
                     content=chunk.content,
+                    contextual_summary=None,
+                    embedding_text=None,
                     char_count=chunk.char_count,
                     source_references_json=json.dumps(
                         [reference.model_dump() for reference in chunk.source_references],
@@ -192,3 +208,98 @@ def chunk_document_version_by_id(
         db.rollback()
         _mark_version_chunk_error(db, version_id, "文档切块发生未预期错误")
         raise BusinessException(code=50052, message="文档切块失败，请查看服务日志") from exc
+
+
+def chunk_document_version_with_parent_child_by_id(
+    db: Session,
+    document: KnowledgeDocument,
+    version_id: str,
+    config: ParentChildChunkingConfig,
+) -> tuple[list[KnowledgeParentTextChunk], list[KnowledgeTextChunk]]:
+    """在候选版本内构建父子块；删除范围严格限制到当前版本，线上版本不会受影响。"""
+    if document.status != DOCUMENT_STATUS_PARSED:
+        raise BusinessException(code=40952, message="文档尚未解析成功，不能执行父子切块")
+    version = _find_version(db, document_id=document.document_id, version_id=version_id)
+    version.status = CHUNK_STATUS_CHUNKING
+    version.error_message = None
+    db.commit()
+    try:
+        build_result: ParentChildTextChunkBuildResult = build_parent_child_text_chunks(
+            document_id=document.document_id,
+            segments=_load_parsed_segments(db, document.document_id),
+            config=config,
+        )
+        chunk_config_json = json.dumps(
+            {
+                "strategy": "parent_child_contextual",
+                "parent_max_characters": config.parent_max_characters,
+                "parent_min_characters": config.parent_min_characters,
+                "child_max_characters": config.child_max_characters,
+                "child_overlap_characters": config.child_overlap_characters,
+                "child_min_characters": config.child_min_characters,
+                "child_semantic_overflow_characters": config.child_semantic_overflow_characters,
+            },
+            ensure_ascii=False,
+        )
+        db.execute(delete(KnowledgeDocumentChunk).where(KnowledgeDocumentChunk.version_id == version.version_id))
+        db.execute(
+            delete(KnowledgeDocumentParentChunk).where(
+                KnowledgeDocumentParentChunk.version_id == version.version_id
+            )
+        )
+        parent_id_by_index = {parent.parent_index: uuid4().hex for parent in build_result.parent_chunks}
+        db.add_all(
+            [
+                KnowledgeDocumentParentChunk(
+                    parent_chunk_id=parent_id_by_index[parent.parent_index],
+                    version_id=version.version_id,
+                    document_id=parent.document_id,
+                    parent_index=parent.parent_index,
+                    content=parent.content,
+                    char_count=parent.char_count,
+                    source_references_json=json.dumps(
+                        [reference.model_dump() for reference in parent.source_references],
+                        ensure_ascii=False,
+                    ),
+                )
+                for parent in build_result.parent_chunks
+            ]
+        )
+        db.add_all(
+            [
+                KnowledgeDocumentChunk(
+                    chunk_id=uuid4().hex,
+                    version_id=version.version_id,
+                    parent_chunk_id=parent_id_by_index[chunk.parent_index],
+                    document_id=chunk.document_id,
+                    chunk_index=chunk.chunk_index,
+                    content=chunk.content,
+                    contextual_summary=None,
+                    embedding_text=None,
+                    char_count=chunk.char_count,
+                    source_references_json=json.dumps(
+                        [reference.model_dump() for reference in chunk.source_references],
+                        ensure_ascii=False,
+                    ),
+                )
+                for chunk in build_result.child_chunks
+            ]
+        )
+        version.status = CHUNK_STATUS_CHUNKED
+        version.chunk_config_json = chunk_config_json
+        version.chunk_count = len(build_result.child_chunks)
+        version.vector_count = 0
+        version.embedding_model = None
+        version.embedding_dimension = None
+        version.vector_collection = None
+        version.error_message = None
+        db.commit()
+        return build_result.parent_chunks, build_result.child_chunks
+    except BusinessException as exc:
+        db.rollback()
+        _mark_version_chunk_error(db, version_id, exc.message)
+        raise
+    except Exception as exc:
+        db.rollback()
+        _mark_version_chunk_error(db, version_id, "父子切块发生未预期错误")
+        raise BusinessException(code=50052, message="父子切块失败，请查看服务日志") from exc

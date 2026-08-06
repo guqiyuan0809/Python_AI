@@ -16,6 +16,7 @@ from day04_app.services.async_task_service import (
     mark_task_error,
     mark_task_success,
     prepare_session_rag_task_retry,
+    prepare_contextual_index_task_retry,
     prepare_work_order_eval_task_retry,
     prepare_work_order_analysis_task_retry,
     prepare_task_retry,
@@ -39,6 +40,7 @@ from day04_app.services.session_service import (
 from day04_app.services.structured_result_service import create_structured_result
 from day04_app.services.eval_result_service import save_eval_report
 from day04_app.services.work_order_eval_runner import run_work_order_eval
+from day04_app.services.knowledge_contextualization_service import build_contextual_vector_index
 from settings import settings
 
 
@@ -54,6 +56,9 @@ def execute_session_rag_task(
     document_id: str,
     retrieval_top_k: int,
     max_context_characters: int,
+    use_reranker: bool = False,
+    rerank_top_n: int = 20,
+    score_threshold: float | None = None,
 ) -> dict:
     """异步会话 RAG：检索、回答、引用快照和任务终态在 Worker 内完成。"""
     db = SessionLocal()
@@ -84,6 +89,9 @@ def execute_session_rag_task(
             message=message,
             retrieval_top_k=retrieval_top_k,
             max_context_characters=max_context_characters,
+            use_reranker=use_reranker,
+            rerank_top_n=rerank_top_n,
+            score_threshold=score_threshold,
         )
         generation = generate_rag_answer(
             question=message,
@@ -181,6 +189,9 @@ def execute_session_rag_task(
                 document_id=document_id,
                 retrieval_top_k=retrieval_top_k,
                 max_context_characters=max_context_characters,
+                use_reranker=use_reranker,
+                rerank_top_n=rerank_top_n,
+                score_threshold=score_threshold,
                 delay_seconds=delay_seconds,
             )
             dispatch_outbox_event(db, retry_event.event_id)
@@ -525,6 +536,145 @@ def execute_work_order_analysis_task(
             error_message=error_message,
         )
         mark_task_error(db, task_id, error_message, cost_ms, error_type=ERROR_TYPE_WORKER_EXECUTION_ERROR)
+        return {"task_id": task_id, "status": "error"}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="day04_app.tasks.ai_tasks.execute_knowledge_contextual_index_task")
+def execute_knowledge_contextual_index_task(
+    task_id: str,
+    version_id: str,
+    context_model: str | None,
+    context_max_tokens: int,
+    trace_id: str | None,
+) -> dict:
+    """为候选知识库版本生成上下文说明并构建 Milvus 索引。"""
+    db = SessionLocal()
+    start_time: float | None = None
+    try:
+        task = claim_pending_task_for_execution(db, task_id)
+        if task is None:
+            return {"task_id": task_id, "status": "ignored"}
+
+        start_time = time.perf_counter()
+        result = build_contextual_vector_index(
+            db,
+            version_id=version_id,
+            context_model=context_model,
+            context_max_tokens=context_max_tokens,
+            trace_id=trace_id,
+        )
+        cost_ms = round((time.perf_counter() - start_time) * 1000)
+        completed_task = mark_task_success(
+            db,
+            task_id=task_id,
+            result_text=(
+                f"上下文化索引完成，version_id={result.version_id}，"
+                f"contextualized_chunk_count={result.contextualized_chunk_count}，"
+                f"vector_count={result.vector_count}"
+            ),
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            total_tokens=result.total_tokens,
+            cost_ms=cost_ms,
+        )
+        if completed_task is None:
+            return {"task_id": task_id, "status": "ignored"}
+
+        create_call_log(
+            db,
+            call_type="knowledge_contextual_index",
+            trace_id=trace_id,
+            model=result.embedding_model,
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            total_tokens=result.total_tokens,
+            cost_ms=cost_ms,
+            status="success",
+        )
+        return {
+            "task_id": task_id,
+            "status": "success",
+            "version_id": result.version_id,
+            "contextualized_chunk_count": result.contextualized_chunk_count,
+            "vector_count": result.vector_count,
+        }
+    except (ModelCallException, BusinessException) as exc:
+        cost_ms = round((time.perf_counter() - start_time) * 1000) if start_time else None
+        error_message = exc.message
+        logger.exception("task_id=%s contextual index failed", task_id)
+        create_call_log(
+            db,
+            call_type="knowledge_contextual_index",
+            trace_id=trace_id,
+            model=context_model,
+            cost_ms=cost_ms,
+            status="error",
+            error_type=getattr(exc, "error_type", ERROR_TYPE_WORKER_EXECUTION_ERROR),
+            error_message=error_message,
+        )
+        failed_task = mark_task_error(
+            db,
+            task_id,
+            error_message,
+            cost_ms,
+            error_type=getattr(exc, "error_type", ERROR_TYPE_WORKER_EXECUTION_ERROR),
+        )
+        if failed_task and failed_task.retry_count < failed_task.max_retries:
+            delay_seconds = min(300, 5 * (2 ** failed_task.retry_count))
+            retry_task, retry_event = prepare_contextual_index_task_retry(
+                db,
+                task_id=task_id,
+                version_id=version_id,
+                context_model=context_model,
+                context_max_tokens=context_max_tokens,
+                delay_seconds=delay_seconds,
+            )
+            dispatch_outbox_event(db, retry_event.event_id)
+            return {
+                "task_id": retry_task.task_id,
+                "status": "retry_scheduled",
+                "retry_count": retry_task.retry_count,
+            }
+        return {"task_id": task_id, "status": "error"}
+    except Exception as exc:
+        cost_ms = round((time.perf_counter() - start_time) * 1000) if start_time else None
+        error_message = f"上下文化索引异步任务执行异常：{type(exc).__name__}"
+        logger.exception("task_id=%s contextual index failed", task_id)
+        create_call_log(
+            db,
+            call_type="knowledge_contextual_index",
+            trace_id=trace_id,
+            model=context_model,
+            cost_ms=cost_ms,
+            status="error",
+            error_type=ERROR_TYPE_WORKER_EXECUTION_ERROR,
+            error_message=error_message,
+        )
+        failed_task = mark_task_error(
+            db,
+            task_id,
+            error_message,
+            cost_ms,
+            error_type=ERROR_TYPE_WORKER_EXECUTION_ERROR,
+        )
+        if failed_task and failed_task.retry_count < failed_task.max_retries:
+            delay_seconds = min(300, 5 * (2 ** failed_task.retry_count))
+            retry_task, retry_event = prepare_contextual_index_task_retry(
+                db,
+                task_id=task_id,
+                version_id=version_id,
+                context_model=context_model,
+                context_max_tokens=context_max_tokens,
+                delay_seconds=delay_seconds,
+            )
+            dispatch_outbox_event(db, retry_event.event_id)
+            return {
+                "task_id": retry_task.task_id,
+                "status": "retry_scheduled",
+                "retry_count": retry_task.retry_count,
+            }
         return {"task_id": task_id, "status": "error"}
     finally:
         db.close()
