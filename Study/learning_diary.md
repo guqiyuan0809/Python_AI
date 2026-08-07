@@ -202,6 +202,10 @@ Day24 的链路变成有限循环：
 - Agent 决策解析增加了 action 归一化：模型如果把动作输出成“调用工具/最终回答”等中文表达，后端会先归一化为 `call_tool/final_answer`，再交给 Pydantic 枚举校验。
 - 新增重复工具调用护栏：如果 Agent 再次调用相同工具和相同参数，后端会返回 `status=stopped_by_guardrail` 并停止循环，避免重复打业务接口和浪费 token。
 - 将工具执行前的风险判断抽象为 `ToolPolicyChecker`，返回 `allow / block / require_confirm` 策略结果；当前高风险或写操作工具返回 `require_confirm`，不直接执行。
+- 统一 Agent observation 格式，将工具原始返回包装成 `success / not_found / require_confirm / blocked / error / stopped_by_guardrail` 等状态，避免下一轮模型从不同工具的私有字段里猜含义。
+- 新增终止态 observation 的确定性收口：当 observation 是 `not_found / require_confirm / blocked / error / stopped_by_guardrail` 时，后端直接返回确定性回答，不再额外调用下一轮模型。
+- 工具执行异常观察化：工具调用阶段出现参数不合法、工具执行失败等异常时，不直接让整个 Agent Loop 接口失败，而是记录为本轮 `observation.status=error`，再由终止态收口返回。
+- 强化多工具串联提示：Agent 可以从上一轮 `observation.data` 中提取字段作为下一轮工具参数，例如先查异步任务得到 `session_id`，再查会话状态，最后汇总回答。
 
 今天的核心认知：
 
@@ -216,3 +220,66 @@ Day24 当前仍然是同步接口，适合先理解 Loop 结构。后续如果 A
 - 即使 prompt 写得很清楚，后端也要做轻量兼容和强校验：先归一化常见表达，再用 Pydantic 校验最终 DTO。
 - “不要重复调用工具”不能只写在 prompt 里，后端也必须用代码记录已调用过的 `tool_name + arguments`，在重复动作发生前拦截。
 - 风险判断不应长期散落在业务 if 中，应抽象成策略校验层。课程阶段规则仍写在代码里，企业中可以进一步接数据库配置、配置中心或规则引擎。
+- 工具 executor 可以保留各自的业务返回结构，但进入 Agent Loop 的 observation 应统一包装。这样模型、前端和审计系统看到的是稳定协议，而不是每个工具各说各话。
+- 不是所有 observation 都需要再交给模型判断。对于未找到、需人工确认、被拦截、工具异常这类明确终止态，后端确定性收口更省 token，也更不容易误回答。
+- 工具执行失败和模型决策失败要区分处理：模型输出 JSON 不合法属于模型决策失败；工具参数或业务查询失败属于 action 的 observation，应进入 steps，方便前端和审计看到 Agent 失败在哪一步。
+- Agent Loop 相比单轮 Tool Calling 的核心价值，不是“多调用几次模型”，而是可以让上一轮工具返回的 observation 驱动下一轮决策，实现多个受控工具的串联。
+
+多工具串联验证结果：
+
+- 用户目标：查询异步任务状态，再根据任务里的 `session_id` 查询会话状态，最后汇总回答。
+- 第 1 步：Agent 调用 `get_async_task_status`，参数为 `task_id=343403537901817856`。
+- 第 1 步 observation 返回 `status=success`，并在 `data.session_id` 中给出 `5360cb51bd804535a8bd20ee58eca528`。
+- 第 2 步：Agent 从上一轮 observation 中提取 `session_id`，调用 `get_session_status`。
+- 第 2 步 observation 返回会话状态 `active`。
+- 第 3 步：Agent 判断信息足够，执行 `final_answer`，汇总任务 `success` 和会话 `active`。
+
+这个验证说明当前 Agent Loop 已经具备“观察结果驱动下一步工具调用”的能力。
+
+### Day24 完成总结
+
+Day24 已完成受控 Agent Loop 的第一版，且已完成多工具串联验证。它和 Day23 的单轮 Tool Calling 的区别不是“多调用几次模型”，而是把上一步工具的 `observation` 作为下一步决策的输入，使 Agent 能在受控边界内完成依赖型任务。
+
+当前交付：
+
+- 新增同步接口 `POST /api/chat/agent-loop`。
+- 用 `action=call_tool/final_answer` 把每一轮行为限制为两种明确动作。
+- 用 `max_steps=1~5` 限制循环上限，避免无限循环、接口长时间占用和 token 失控。
+- 复用 Day23 的工具白名单、Pydantic 参数 DTO、`ToolPolicyChecker` 和高风险工具拦截，确保进入 Loop 不会绕过安全门。
+- 将不同工具的返回归一化为统一 `observation` 协议，便于下一轮模型、前端和审计侧读取。
+- 对 `not_found`、`require_confirm`、`blocked`、`error`、`stopped_by_guardrail` 做后端确定性终止，不再无意义地多调用模型。
+- 用 `tool_name + canonical arguments` 生成调用键，拦截重复的相同工具调用，防止 Agent 卡在循环中。
+- 每轮把 action、参数、原因、observation 和最终回答记录在响应 `steps` 中，并通过 `ai_call_log` 记录整次 Agent Loop 的模型 token、耗时和异常。
+
+Day23 与 Day24 的边界：
+
+| 维度 | Day23 Tool Calling | Day24 Agent Loop |
+| --- | --- | --- |
+| 模型决策次数 | 一次工具决策，随后生成最终回答 | 最多 `max_steps` 次决策 |
+| 工具调用次数 | 最多一个 | 可串联多个不同工具 |
+| 下轮输入 | 无下一轮 | 上轮 `observation` 进入下一轮上下文 |
+| 典型场景 | “查询任务状态” | “查询任务状态，再查询关联会话状态” |
+| 风险控制 | 白名单、DTO、策略拦截 | 保留 Day23 控制，额外增加步数和重复调用护栏 |
+
+面试表达：
+
+> 我实现的不是让大模型自由执行的 Agent，而是受控 Agent Loop。模型每轮只能在 `call_tool` 和 `final_answer` 两个动作中选择；真实工具执行仍由后端白名单、Pydantic 参数校验和风险策略层控制。我把工具返回统一为 observation 协议，并将未找到、需人工确认、被拦截和工具异常做成确定性终止态，避免 Agent 在失败后继续消耗 token 或编造结果。对于多步任务，下一轮只能使用上轮 observation 中已返回的事实字段，例如先从任务结果中获得 session_id，再查询会话状态。
+
+当前实现的边界与后续演进：
+
+- 当前接口是同步执行，适合 1~5 步、低耗时、只读工具场景。
+- 如果工具链路变长或包含慢模型调用，应复用 `ai_async_task + ai_task_outbox + RabbitMQ + Celery Worker` 改为异步 Agent 任务，由前端轮询。
+- 当前工具风险规则写在代码中的 `ToolPolicyChecker`，企业后续可以迁移到数据库配置、配置中心或规则引擎，但“后端硬校验不能交给模型”这一原则不变。
+- 当前 `ai_call_log` 已覆盖整次调用；Day26 可进一步记录每一步的决策原文、工具名、脱敏参数快照、工具耗时、observation 状态和终止原因，形成可检索的 Agent Step Trace。
+- 写操作工具不能因为 Agent Loop 存在就自动执行，后续必须结合用户身份、权限、人工确认、审批流和审计记录。
+
+Day24 自测清单：
+
+- 正常单工具：查询一个存在的异步任务，返回 `success` 和正确数据。
+- 多工具串联：先查任务，再使用返回的 `session_id` 查会话，最后 `final_answer`。
+- 不存在数据：传入不存在的 task_id，第一轮得到 `not_found`，后端直接收口，不进入第二轮模型决策。
+- 高风险动作：请求关闭工单，得到 `require_confirm` 或 `blocked`，不修改业务数据。
+- 重复动作：模型再次发出相同 `tool_name + arguments`，得到 `stopped_by_guardrail`。
+- 最大步数：始终未给出 `final_answer` 时，返回 `max_steps_reached`。
+
+Day24 到此结束。下一天从 Day25 开始，不重复基础 Harness 建设；应在已有 Prompt Harness、RAG 检索评测和 Agent Loop 的基础上，系统化整理 Harness 的评测对象、指标、回归准入和自动化运行方式。

@@ -4,10 +4,9 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="5108f4fb-6914-4289-8411-3469ec54b2e8" name="更改" comment="第23天-1">
+    <list default="true" id="5108f4fb-6914-4289-8411-3469ec54b2e8" name="更改" comment="第23天-2">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Study/day04_app/services/agent_loop_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/agent_loop_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/tool_calling_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/tool_calling_service.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Study/learning_diary.md" beforeDir="false" afterPath="$PROJECT_DIR$/Study/learning_diary.md" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -56,17 +55,17 @@
       <entry key="S5" value="1.0" />
       <entry key="S10" value="1.0" />
       <entry key="S30" value="1.0" />
-      <entry key="S60" value="1.0" />
-      <entry key="M2" value="1.0" />
-      <entry key="M5" value="1.0000000000000004" />
-      <entry key="M10" value="1.0000000335471342" />
-      <entry key="M15" value="1.00001500182282" />
-      <entry key="M30" value="1.006708611493772" />
-      <entry key="H1" value="1.1418655725780018" />
-      <entry key="H2" value="1.6527755356108882" />
-      <entry key="H4" value="2.556489752513413" />
-      <entry key="D1" value="137.22801250838103" />
-      <entry key="W1" value="481.61026519537523" />
+      <entry key="S60" value="1.0000000000000004" />
+      <entry key="M2" value="1.0000000182563678" />
+      <entry key="M5" value="1.0008027230804397" />
+      <entry key="M10" value="1.0283323690202177" />
+      <entry key="M15" value="1.0929383801124581" />
+      <entry key="M30" value="1.3069008387480818" />
+      <entry key="H1" value="1.6304666593854669" />
+      <entry key="H2" value="2.2281105120073947" />
+      <entry key="H4" value="3.2037171053852296" />
+      <entry key="D1" value="134.87353701639785" />
+      <entry key="W1" value="480.91055457164566" />
     </decayedCancelled>
     <decayedSelected>
       <entry key="MS100" value="0.0" />
@@ -77,34 +76,34 @@
       <entry key="S30" value="0.0" />
       <entry key="S60" value="0.0" />
       <entry key="M2" value="0.0" />
-      <entry key="M5" value="2.0061844037175543E-165" />
-      <entry key="M10" value="1.0076301391318969E-82" />
-      <entry key="M15" value="3.812190262376761E-55" />
-      <entry key="M30" value="1.6729719090976986E-27" />
-      <entry key="H1" value="1.878398863172223E-13" />
-      <entry key="H2" value="3.3088181665662445E-6" />
-      <entry key="H4" value="0.01916085378282577" />
-      <entry key="D1" value="36.40204793319065" />
-      <entry key="W1" value="137.66026240204894" />
+      <entry key="M5" value="1.610410524482182E-168" />
+      <entry key="M10" value="2.8548547980056225E-84" />
+      <entry key="M15" value="3.5429347261788086E-56" />
+      <entry key="M30" value="5.10014989682285E-28" />
+      <entry key="H1" value="1.0371342167571583E-13" />
+      <entry key="H2" value="2.4586486701468994E-6" />
+      <entry key="H4" value="0.016516827886161028" />
+      <entry key="D1" value="35.512216655903686" />
+      <entry key="W1" value="137.17442846664633" />
     </decayedSelected>
     <decayedShown>
-      <entry key="MS100" value="0.7684375906440062" />
-      <entry key="MS500" value="0.9486843151404539" />
-      <entry key="S2" value="0.9869165458858419" />
-      <entry key="S5" value="0.9947459325778691" />
-      <entry key="S10" value="0.9973695065410157" />
-      <entry key="S30" value="0.9991223988885992" />
-      <entry key="S60" value="0.999561103129068" />
-      <entry key="M2" value="0.9997805274804406" />
-      <entry key="M5" value="0.9999122052113175" />
-      <entry key="M10" value="0.999956135182594" />
-      <entry key="M15" value="0.9999857340495262" />
-      <entry key="M30" value="1.006693534156001" />
-      <entry key="H1" value="1.1418535578892017" />
-      <entry key="H2" value="1.6527643742493983" />
-      <entry key="H4" value="2.575632865512245" />
-      <entry key="D1" value="173.62888559719684" />
-      <entry key="W1" value="619.2698960834691" />
+      <entry key="MS100" value="0.9526379980439373" />
+      <entry key="MS500" value="0.9903428719330246" />
+      <entry key="S2" value="0.9975769252644544" />
+      <entry key="S5" value="0.9990300646389034" />
+      <entry key="S10" value="0.9995149146655609" />
+      <entry key="S30" value="0.9998382787361629" />
+      <entry key="S60" value="0.9999191360985966" />
+      <entry key="M2" value="0.9999595854842547" />
+      <entry key="M5" value="1.0007864793021128" />
+      <entry key="M10" value="1.0283230385911868" />
+      <entry key="M15" value="1.092930268923619" />
+      <entry key="M30" value="1.3068935467672809" />
+      <entry key="H1" value="1.6304586778414598" />
+      <entry key="H2" value="2.2281015445591863" />
+      <entry key="H4" value="3.2202183036099155" />
+      <entry key="D1" value="170.384607490298" />
+      <entry key="W1" value="618.0843537450688" />
     </decayedShown>
   </component>
   <component name="ProjectColorInfo">{
@@ -314,7 +313,7 @@
       <workItem from="1785886258053" duration="9144000" />
       <workItem from="1785974549969" duration="1269000" />
       <workItem from="1786004850259" duration="3492000" />
-      <workItem from="1786059885883" duration="14119000" />
+      <workItem from="1786059885883" duration="19192000" />
     </task>
     <task id="LOCAL-00001" summary="111">
       <option name="closed" value="true" />
@@ -508,7 +507,15 @@
       <option name="project" value="LOCAL" />
       <updated>1786087591532</updated>
     </task>
-    <option name="localTasksCounter" value="25" />
+    <task id="LOCAL-00025" summary="第23天-2">
+      <option name="closed" value="true" />
+      <created>1786090677173</created>
+      <option name="number" value="00025" />
+      <option name="presentableId" value="LOCAL-00025" />
+      <option name="project" value="LOCAL" />
+      <updated>1786090677173</updated>
+    </task>
+    <option name="localTasksCounter" value="26" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -557,13 +564,14 @@
     <MESSAGE value="第22天" />
     <MESSAGE value="第23天" />
     <MESSAGE value="第23天-1" />
-    <option name="LAST_COMMIT_MESSAGE" value="第23天-1" />
+    <MESSAGE value="第23天-2" />
+    <option name="LAST_COMMIT_MESSAGE" value="第23天-2" />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/Pythoncode$DemoClass.coverage" NAME="DemoClass 覆盖结果" MODIFIED="1779969206789" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/Pythoncode$day02.coverage" NAME="day02 覆盖结果" MODIFIED="1780649030673" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/Study" />
     <SUITE FILE_PATH="coverage/Pythoncode$Celery_day04_app_celery_app.coverage" NAME="Celery day04_app.celery_app 覆盖结果" MODIFIED="1785724327924" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="" />
-    <SUITE FILE_PATH="coverage/Pythoncode$run_day04.coverage" NAME="run_day04 覆盖结果" MODIFIED="1786086929481" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/Study" />
+    <SUITE FILE_PATH="coverage/Pythoncode$run_day04.coverage" NAME="run_day04 覆盖结果" MODIFIED="1786095155547" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/Study" />
     <SUITE FILE_PATH="coverage/Pythoncode$day01.coverage" NAME="day01 覆盖结果" MODIFIED="1780408580009" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/Study" />
     <SUITE FILE_PATH="coverage/Pythoncode$ljh1.coverage" NAME="ljh1 覆盖结果" MODIFIED="1780045234815" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/Pythoncode$day04_fastapi.coverage" NAME="day04_fastapi 覆盖结果" MODIFIED="1780748592809" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/Study" />

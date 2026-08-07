@@ -37,8 +37,11 @@ AGENT_LOOP_SYSTEM_PROMPT = """你是企业 AI Agent 的受控决策器。
 - 只能选择【可用工具】中的工具，不能编造工具名。
 - 不能直接输出 SQL，不能请求执行未授权动作。
 - 如果工具观察结果 status=blocked 或 status=require_confirm，必须停止继续执行高风险动作，并用 final_answer 告知用户需要人工确认。
-- 如果工具结果显示未找到或数据不足，可以选择 final_answer 说明现有信息不足。
+- 如果工具观察结果 status=not_found，必须 final_answer 告知用户未找到匹配数据，不要重复调用相同工具。
+- 如果工具观察结果 status=error，必须 final_answer 告知用户工具执行失败或稍后重试，不要编造结果。
 - 不要重复调用相同工具和相同参数；如果观察结果已足够，应直接 final_answer。
+- 你可以从上一轮 observation.data 中提取字段作为下一轮工具参数，例如先查任务得到 session_id，再用 session_id 查询会话状态。
+- 如果用户目标需要多个信息来源，应该按顺序调用不同工具，并在信息足够后 final_answer 汇总回答。
 
 JSON 格式：
 调用工具时：
@@ -68,6 +71,112 @@ class AgentLoopDecision(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict, description="工具参数")
     reason: str = Field(..., min_length=1, max_length=500, description="决策原因")
     final_answer: str | None = Field(None, description="最终回答")
+
+
+def _normalize_tool_observation(
+    *,
+    tool_name: str | None,
+    arguments: dict[str, Any],
+    raw_result: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """把不同工具的原始返回包装成统一 observation。
+
+    统一状态能降低下一轮模型理解成本，也方便前端展示和后续审计分析。
+    """
+    if raw_result is None:
+        return {
+            "status": "error",
+            "tool_name": tool_name,
+            "arguments": arguments,
+            "message": "工具未返回结果",
+            "data": None,
+            "raw_result": None,
+        }
+
+    raw_status = raw_result.get("status")
+    if raw_status in {"require_confirm", "blocked", "stopped_by_guardrail", "error"}:
+        return {
+            "status": raw_status,
+            "tool_name": raw_result.get("tool_name", tool_name),
+            "arguments": raw_result.get("arguments", arguments),
+            "message": (
+                raw_result.get("blocked_reason")
+                or raw_result.get("message")
+                or "工具未执行或被系统拦截"
+            ),
+            "data": raw_result.get("data"),
+            "matched_rules": raw_result.get("matched_rules", []),
+            "tool_metadata": raw_result.get("tool_metadata"),
+            "raw_result": raw_result,
+        }
+
+    data = raw_result.get("data")
+    if isinstance(data, dict) and data.get("found") is False:
+        return {
+            "status": "not_found",
+            "tool_name": raw_result.get("tool_name", tool_name),
+            "arguments": raw_result.get("arguments", arguments),
+            "message": data.get("message") or "未找到匹配数据",
+            "data": None,
+            "raw_result": raw_result,
+        }
+
+    return {
+        "status": "success",
+        "tool_name": raw_result.get("tool_name", tool_name),
+        "arguments": raw_result.get("arguments", arguments),
+        "message": "工具执行成功",
+        "data": data if data is not None else raw_result,
+        "raw_result": raw_result,
+    }
+
+
+def _build_tool_error_observation(
+    *,
+    tool_name: str | None,
+    arguments: dict[str, Any],
+    exc: Exception,
+) -> dict[str, Any]:
+    message = getattr(exc, "message", str(exc))
+    return {
+        "status": "error",
+        "tool_name": tool_name,
+        "arguments": arguments,
+        "message": message,
+        "error_type": getattr(exc, "error_type", type(exc).__name__),
+        "error_code": getattr(exc, "code", None),
+        "data": None,
+        "raw_result": None,
+    }
+
+
+def _is_terminal_observation(observation: dict[str, Any]) -> bool:
+    # 这些状态已经足够决定“不能继续自动行动”，无需再烧一次模型让它做 final_answer。
+    return observation.get("status") in {
+        "not_found",
+        "require_confirm",
+        "blocked",
+        "error",
+        "stopped_by_guardrail",
+    }
+
+
+def _build_terminal_observation_answer(observation: dict[str, Any]) -> str:
+    status = observation.get("status")
+    message = observation.get("message") or "工具执行结果不足"
+    tool_name = observation.get("tool_name") or "未知工具"
+
+    if status == "not_found":
+        return f"未找到匹配数据：{message}"
+    if status == "require_confirm":
+        return f"工具 {tool_name} 尚未执行：{message}"
+    if status == "blocked":
+        return f"工具 {tool_name} 已被系统拦截：{message}"
+    if status == "error":
+        return f"工具 {tool_name} 执行失败：{message}"
+    if status == "stopped_by_guardrail":
+        return f"系统已停止继续执行：{message}"
+    return f"系统已停止继续执行：{message}"
 
 
 def _make_tool_call_key(tool_name: str | None, arguments: dict[str, Any]) -> str:
@@ -286,7 +395,21 @@ def run_agent_loop(
                 arguments=decision.arguments,
                 reason=decision.reason,
             )
-            observation = execute_registered_tool(db, tool_decision)
+            try:
+                raw_observation = execute_registered_tool(db, tool_decision)
+                observation = _normalize_tool_observation(
+                    tool_name=decision.tool_name,
+                    arguments=decision.arguments,
+                    raw_result=raw_observation,
+                )
+            except (BusinessException, ModelCallException) as exc:
+                # 工具执行失败属于本轮 action 的观察结果，不让整个 Agent Loop 直接炸掉。
+                # 例如参数不合法、工具不存在、权限策略拒绝等，都转成 error observation 后确定性收口。
+                observation = _build_tool_error_observation(
+                    tool_name=decision.tool_name,
+                    arguments=decision.arguments,
+                    exc=exc,
+                )
             steps.append(
                 AgentLoopStepItem(
                     step_index=step_index,
@@ -298,6 +421,30 @@ def run_agent_loop(
                     final_answer=None,
                 )
             )
+            if _is_terminal_observation(observation):
+                # 终止态 observation 由后端直接确定性收口，避免多调用一轮模型造成成本浪费或误回答。
+                cost_ms = round((time.perf_counter() - start_time) * 1000)
+                answer = _build_terminal_observation_answer(observation)
+                _safe_create_agent_loop_log(
+                    db,
+                    trace_id=trace_id,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    cost_ms=cost_ms,
+                    status="success",
+                )
+                return AgentLoopResponse(
+                    answer=answer,
+                    status="success",
+                    steps=steps,
+                    available_tools=list_available_tools(),
+                    model=settings.dashscope_model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    cost_ms=cost_ms,
+                )
 
         # 达到最大循环次数时强制停止，避免 Agent 无限制调用模型和工具。
         cost_ms = round((time.perf_counter() - start_time) * 1000)
