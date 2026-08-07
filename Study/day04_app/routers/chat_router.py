@@ -48,6 +48,8 @@ from day04_app.schemas.chat_schema import (
     ConvertFailureSampleToEvalSampleRequest,
     CreateSessionResponse,
     EvalGateCompareRequest,
+    ToolCallingRequest,
+    ToolCallingResponse,
     PublishPromptVersionRequest,
     RollbackPromptVersionRequest,
     RefreshSessionSummaryResponse,
@@ -102,6 +104,7 @@ from day04_app.services.chat_service import (
     stream_chat_events,
     stream_session_chat_events,
 )
+from day04_app.services.tool_calling_service import answer_with_tool_calling
 from day04_app.services.session_service import (
     add_message,
     archive_session,
@@ -368,6 +371,28 @@ def to_async_task_status(task, structured_result: dict | None = None) -> AsyncTa
 def chat(request_body: ChatRequest, request: Request) -> ApiResponse[ChatResponse]:
     result = safe_chat(request_body.message)
     return success(result, trace_id=request.state.trace_id)
+
+
+@router.post(
+    "/tool-calling",
+    response_model=ApiResponse[ToolCallingResponse],
+    summary="Day23 单轮 Tool Calling：模型选择白名单工具并生成最终回答",
+)
+def tool_calling_chat(
+    request_body: ToolCallingRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[ToolCallingResponse]:
+    result = answer_with_tool_calling(
+        db,
+        request_body.message,
+        trace_id=request.state.trace_id,
+    )
+    return success(
+        result,
+        message="Tool Calling 执行完成",
+        trace_id=request.state.trace_id,
+    )
 
 
 @router.post(

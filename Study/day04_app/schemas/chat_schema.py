@@ -447,3 +447,36 @@ class AsyncTaskStatusResponse(BaseModel):
 class AsyncTaskTimeoutScanResponse(BaseModel):
     timeout_count: int
     task_ids: list[str]
+
+
+class ToolCallingRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=1000, description="用户问题")
+
+
+class ToolDefinitionItem(BaseModel):
+    name: str = Field(..., description="工具名称")
+    description: str = Field(..., description="工具用途说明")
+    tool_type: str = Field(..., description="工具类型，例如 ai_system_query/business_query/business_action")
+    read_only: bool = Field(..., description="是否只读工具；只读工具不会修改业务数据")
+    require_human_confirm: bool = Field(..., description="执行前是否需要人工确认")
+    risk_level: str = Field(..., description="工具风险等级，例如 low/medium/high")
+    parameters_schema: dict = Field(..., description="工具参数 JSON Schema")
+
+
+class ToolCallDecisionItem(BaseModel):
+    need_tool: bool = Field(..., description="模型判断是否需要调用工具")
+    tool_name: str | None = Field(None, description="模型选择的工具名称")
+    arguments: dict = Field(default_factory=dict, description="模型生成的工具参数")
+    reason: str = Field(..., description="模型选择或不选择工具的原因")
+
+
+class ToolCallingResponse(BaseModel):
+    answer: str = Field(..., description="最终回答")
+    decision: ToolCallDecisionItem = Field(..., description="工具选择决策")
+    tool_result: dict | None = Field(None, description="后端工具执行结果；未调用工具时为空")
+    available_tools: list[ToolDefinitionItem] = Field(default_factory=list, description="本次允许模型选择的工具白名单")
+    model: str | None = Field(None, description="本次使用的模型")
+    prompt_tokens: int | None = Field(None, ge=0, description="模型输入 Token 数")
+    completion_tokens: int | None = Field(None, ge=0, description="模型输出 Token 数")
+    total_tokens: int | None = Field(None, ge=0, description="模型调用总 Token 数")
+    cost_ms: int | None = Field(None, ge=0, description="总耗时，单位毫秒")
