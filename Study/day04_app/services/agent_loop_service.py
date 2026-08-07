@@ -36,7 +36,7 @@ AGENT_LOOP_SYSTEM_PROMPT = """你是企业 AI Agent 的受控决策器。
 安全规则：
 - 只能选择【可用工具】中的工具，不能编造工具名。
 - 不能直接输出 SQL，不能请求执行未授权动作。
-- 如果工具观察结果 status=blocked，必须停止继续执行高风险动作，并用 final_answer 告知用户需要人工确认。
+- 如果工具观察结果 status=blocked 或 status=require_confirm，必须停止继续执行高风险动作，并用 final_answer 告知用户需要人工确认。
 - 如果工具结果显示未找到或数据不足，可以选择 final_answer 说明现有信息不足。
 - 不要重复调用相同工具和相同参数；如果观察结果已足够，应直接 final_answer。
 

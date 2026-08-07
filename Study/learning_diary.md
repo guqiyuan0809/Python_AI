@@ -201,6 +201,7 @@ Day24 的链路变成有限循环：
 - Agent Loop 接入 `ai_call_log`，使用 `call_type=agent_loop` 记录 token、耗时和异常。
 - Agent 决策解析增加了 action 归一化：模型如果把动作输出成“调用工具/最终回答”等中文表达，后端会先归一化为 `call_tool/final_answer`，再交给 Pydantic 枚举校验。
 - 新增重复工具调用护栏：如果 Agent 再次调用相同工具和相同参数，后端会返回 `status=stopped_by_guardrail` 并停止循环，避免重复打业务接口和浪费 token。
+- 将工具执行前的风险判断抽象为 `ToolPolicyChecker`，返回 `allow / block / require_confirm` 策略结果；当前高风险或写操作工具返回 `require_confirm`，不直接执行。
 
 今天的核心认知：
 
@@ -214,3 +215,4 @@ Day24 当前仍然是同步接口，适合先理解 Loop 结构。后续如果 A
 - 更稳的写法是分别给出 `call_tool` 和 `final_answer` 两个合法 JSON 示例。
 - 即使 prompt 写得很清楚，后端也要做轻量兼容和强校验：先归一化常见表达，再用 Pydantic 校验最终 DTO。
 - “不要重复调用工具”不能只写在 prompt 里，后端也必须用代码记录已调用过的 `tool_name + arguments`，在重复动作发生前拦截。
+- 风险判断不应长期散落在业务 if 中，应抽象成策略校验层。课程阶段规则仍写在代码里，企业中可以进一步接数据库配置、配置中心或规则引擎。

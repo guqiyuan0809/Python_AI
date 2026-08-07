@@ -6,7 +6,7 @@ import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
@@ -78,6 +78,12 @@ class CloseWorkOrderArgs(BaseModel):
     close_reason: str = Field(..., min_length=5, max_length=500, description="关闭原因")
 
 
+class ToolPolicyResult(BaseModel):
+    decision: Literal["allow", "block", "require_confirm"] = Field(..., description="策略决策结果")
+    reason: str = Field(..., description="策略命中原因")
+    matched_rules: list[str] = Field(default_factory=list, description="命中的策略规则")
+
+
 @dataclass(frozen=True)
 class ToolDefinition:
     name: str
@@ -99,6 +105,39 @@ class ToolDefinition:
             risk_level=self.risk_level,
             parameters_schema=self.args_model.model_json_schema(),
         )
+
+
+class ToolPolicyChecker:
+    """工具执行策略校验器。
+
+    课程阶段先用代码规则表达；企业中可以替换为数据库配置、配置中心或规则引擎。
+    """
+
+    def check(self, tool: ToolDefinition, arguments: dict[str, Any]) -> ToolPolicyResult:
+        matched_rules: list[str] = []
+
+        if not tool.read_only:
+            matched_rules.append("WRITE_TOOL_REQUIRE_CONFIRM")
+        if tool.require_human_confirm:
+            matched_rules.append("TOOL_MARKED_REQUIRE_HUMAN_CONFIRM")
+        if tool.risk_level != "low":
+            matched_rules.append("NON_LOW_RISK_TOOL_REQUIRE_CONFIRM")
+
+        if matched_rules:
+            return ToolPolicyResult(
+                decision="require_confirm",
+                reason="该工具不是低风险自动执行工具，需要人工确认或额外权限审批",
+                matched_rules=matched_rules,
+            )
+
+        return ToolPolicyResult(
+            decision="allow",
+            reason="低风险只读工具，允许自动执行",
+            matched_rules=["LOW_RISK_READ_ONLY_AUTO_ALLOW"],
+        )
+
+
+tool_policy_checker = ToolPolicyChecker()
 
 
 def _format_dt(value) -> str | None:
@@ -342,14 +381,16 @@ def execute_registered_tool(db: Session, decision: ToolDecision) -> dict[str, An
     if decision.tool_name not in TOOL_REGISTRY:
         raise BusinessException(code=40090, message="工具不存在或未授权")
     tool = TOOL_REGISTRY[decision.tool_name]
-    # Day23 当前只开放“低风险、只读、无需人工确认”的查询工具。
-    # 后续如果加入业务写操作工具，必须在这里增加人工确认、权限校验和审计流程。
-    if not tool.read_only or tool.require_human_confirm or tool.risk_level != "low":
+    # 执行工具前必须先过策略校验层。
+    # 当前策略允许低风险只读工具自动执行；高风险或写操作工具返回 require_confirm，不直接执行。
+    policy_result = tool_policy_checker.check(tool, decision.arguments)
+    if policy_result.decision != "allow":
         return {
             "tool_name": tool.name,
             "arguments": decision.arguments,
-            "status": "blocked",
-            "blocked_reason": "该工具风险较高，当前不允许自动执行，需要人工确认或额外权限审批",
+            "status": policy_result.decision,
+            "blocked_reason": policy_result.reason,
+            "matched_rules": policy_result.matched_rules,
             "tool_metadata": {
                 "tool_type": tool.tool_type,
                 "read_only": tool.read_only,
