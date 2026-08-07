@@ -35,6 +35,8 @@ from day04_app.schemas.chat_schema import (
     AiPromptPublishAuditPageResponse,
     AiPromptRollbackAuditItem,
     AiPromptRollbackAuditPageResponse,
+    AgentLoopRequest,
+    AgentLoopResponse,
     AsyncWorkOrderAnalysisTaskRequest,
     AsyncWorkOrderEvalTaskRequest,
     AsyncSessionChatTaskRequest,
@@ -65,6 +67,7 @@ from day04_app.schemas.chat_schema import (
     WorkOrderAnalysisParseTestRequest,
     WorkOrderAnalysisResponse,
 )
+from day04_app.services.agent_loop_service import run_agent_loop
 from day04_app.services.async_task_service import (
     create_async_session_chat_task,
     create_async_work_order_eval_task,
@@ -391,6 +394,29 @@ def tool_calling_chat(
     return success(
         result,
         message="Tool Calling 执行完成",
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.post(
+    "/agent-loop",
+    response_model=ApiResponse[AgentLoopResponse],
+    summary="Day24 受控 Agent Loop：感知、决策、行动、观察反馈、停止",
+)
+def agent_loop_chat(
+    request_body: AgentLoopRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[AgentLoopResponse]:
+    result = run_agent_loop(
+        db,
+        message=request_body.message,
+        max_steps=request_body.max_steps,
+        trace_id=request.state.trace_id,
+    )
+    return success(
+        result,
+        message="Agent Loop 执行完成",
         trace_id=request.state.trace_id,
     )
 

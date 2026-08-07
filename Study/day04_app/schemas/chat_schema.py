@@ -480,3 +480,30 @@ class ToolCallingResponse(BaseModel):
     completion_tokens: int | None = Field(None, ge=0, description="模型输出 Token 数")
     total_tokens: int | None = Field(None, ge=0, description="模型调用总 Token 数")
     cost_ms: int | None = Field(None, ge=0, description="总耗时，单位毫秒")
+
+
+class AgentLoopRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=1000, description="用户问题")
+    max_steps: int = Field(3, ge=1, le=5, description="Agent 最大循环步数，防止无限循环和成本失控")
+
+
+class AgentLoopStepItem(BaseModel):
+    step_index: int = Field(..., ge=1, description="循环步序号，从 1 开始")
+    action: Literal["call_tool", "final_answer"] = Field(..., description="本轮动作：调用工具或最终回答")
+    tool_name: str | None = Field(None, description="本轮选择的工具名称")
+    arguments: dict = Field(default_factory=dict, description="本轮工具参数")
+    reason: str = Field(..., description="本轮决策原因")
+    observation: dict | None = Field(None, description="工具执行或拦截后的观察结果")
+    final_answer: str | None = Field(None, description="模型在本轮给出的最终回答")
+
+
+class AgentLoopResponse(BaseModel):
+    answer: str = Field(..., description="Agent Loop 最终回答")
+    status: Literal["success", "max_steps_reached", "stopped_by_guardrail"] = Field(..., description="执行状态")
+    steps: list[AgentLoopStepItem] = Field(default_factory=list, description="每一轮决策、行动和观察记录")
+    available_tools: list[ToolDefinitionItem] = Field(default_factory=list, description="本次允许 Agent 使用的工具白名单")
+    model: str | None = Field(None, description="本次使用的模型")
+    prompt_tokens: int | None = Field(None, ge=0, description="模型输入 Token 数")
+    completion_tokens: int | None = Field(None, ge=0, description="模型输出 Token 数")
+    total_tokens: int | None = Field(None, ge=0, description="模型调用总 Token 数")
+    cost_ms: int | None = Field(None, ge=0, description="总耗时，单位毫秒")

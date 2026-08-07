@@ -167,3 +167,50 @@ Day23 和 Day24 的边界：
 简历表达：
 
 > 我在项目中实现了受控 Tool Calling 能力。模型只负责根据用户自然语言选择工具和抽取参数，后端通过工具注册表、参数 DTO、风险元信息和执行安全门控制真实执行。低风险只读查询工具可自动调用，高风险业务动作会被 blocked 并要求人工确认。同时调用链路接入 traceId 和调用日志，避免模型越权、误执行和不可审计的问题。
+
+## 2026-08-07：Day24 Agent Loop 循环
+
+今天开始从 Day23 的单轮 Tool Calling 升级到受控 Agent Loop。
+
+Day23 的链路是固定的一次：
+
+```text
+用户问题 -> 模型决策 -> 工具执行/拦截 -> 模型最终回答 -> 结束
+```
+
+Day24 的链路变成有限循环：
+
+```text
+感知用户目标和历史观察
+-> 模型决策下一步 action
+-> 后端执行工具或拦截
+-> 把 observation 放回上下文
+-> 模型再次决策
+-> 最终回答或达到最大步数停止
+```
+
+当前实现的是企业可控版 Agent，而不是完全自由的 Agent：
+
+- 新增 `/api/chat/agent-loop` 接口。
+- 请求体支持 `message` 和 `max_steps`。
+- `max_steps` 限制为 1 到 5，默认 3，防止无限循环和成本失控。
+- 每一轮模型只能选择两种动作：`call_tool` 或 `final_answer`。
+- `call_tool` 会复用 Day23 的 `ToolDecision`、工具白名单、参数 DTO 校验和风险安全门。
+- 高风险工具仍然只能返回 `blocked`，不能因为进入 Loop 就绕过安全策略。
+- 响应会返回 `steps`，记录每一轮的 action、tool_name、arguments、reason、observation 和 final_answer。
+- Agent Loop 接入 `ai_call_log`，使用 `call_type=agent_loop` 记录 token、耗时和异常。
+- Agent 决策解析增加了 action 归一化：模型如果把动作输出成“调用工具/最终回答”等中文表达，后端会先归一化为 `call_tool/final_answer`，再交给 Pydantic 枚举校验。
+- 新增重复工具调用护栏：如果 Agent 再次调用相同工具和相同参数，后端会返回 `status=stopped_by_guardrail` 并停止循环，避免重复打业务接口和浪费 token。
+
+今天的核心认知：
+
+> Agent Loop 不是让模型自由行动，而是让模型在后端设置的边界里反复进行“决策 -> 行动 -> 观察 -> 再决策”。真正的工具执行、权限控制、风险拦截、最大循环次数和审计日志都必须由后端控制。
+
+Day24 当前仍然是同步接口，适合先理解 Loop 结构。后续如果 Agent 步骤变多、耗时变长，应复用之前的异步任务 + Outbox + Worker 机制，把 Agent Loop 做成异步任务并由前端轮询状态。
+
+工程踩坑：
+
+- Prompt 中的 JSON 示例不能写成 `"action": "call_tool 或 final_answer"`，模型可能照抄说明文本，导致后端枚举校验失败。
+- 更稳的写法是分别给出 `call_tool` 和 `final_answer` 两个合法 JSON 示例。
+- 即使 prompt 写得很清楚，后端也要做轻量兼容和强校验：先归一化常见表达，再用 Pydantic 校验最终 DTO。
+- “不要重复调用工具”不能只写在 prompt 里，后端也必须用代码记录已调用过的 `tool_name + arguments`，在重复动作发生前拦截。
