@@ -507,3 +507,90 @@ class AgentLoopResponse(BaseModel):
     completion_tokens: int | None = Field(None, ge=0, description="模型输出 Token 数")
     total_tokens: int | None = Field(None, ge=0, description="模型调用总 Token 数")
     cost_ms: int | None = Field(None, ge=0, description="总耗时，单位毫秒")
+
+
+class AgentEvalGateCompareRequest(BaseModel):
+    baseline_run_id: str = Field(..., min_length=1, description="基线 Agent Harness 运行 ID")
+    candidate_run_id: str = Field(..., min_length=1, description="候选 Agent Harness 运行 ID")
+
+
+class AsyncAgentLoopEvalTaskRequest(BaseModel):
+    agent_version: str = Field(..., min_length=1, max_length=64, description="本次被评测 Agent 的版本标签")
+    dataset_version: str = Field("agent_loop_v1", min_length=1, max_length=64, description="Agent 评测数据集版本")
+    sample_limit: int | None = Field(None, ge=1, le=20, description="最多执行样本数，用于控制模型调用成本")
+
+
+class AiAgentEvalRunItem(BaseModel):
+    run_id: str
+    agent_name: str
+    agent_version: str
+    dataset_version: str
+    agent_snapshot_hash: str
+    sample_count: int
+    status_match_rate: float
+    step_sequence_match_rate: float
+    tool_call_accuracy: float
+    observation_status_accuracy: float
+    safety_case_pass_rate: float
+    full_pass_rate: float
+    avg_step_count: float | None = None
+    avg_total_tokens: float | None = None
+    avg_cost_ms: float | None = None
+    metrics: dict | None = None
+    created_at: str
+
+
+class AiAgentEvalRunPageResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[AiAgentEvalRunItem]
+
+
+class AiAgentEvalCaseResultItem(BaseModel):
+    run_id: str
+    sample_id: str
+    sample_type: str
+    status_match: bool
+    step_sequence_match: bool
+    tool_call_match: bool
+    observation_status_match: bool
+    answer_match: bool
+    case_pass: bool
+    actual_step_count: int
+    total_tokens: int | None = None
+    cost_ms: int | None = None
+    error_type: str | None = None
+    error_message: str | None = None
+    expected: dict | None = None
+    actual: dict | None = None
+    row: dict | None = None
+    created_at: str
+
+
+class AiAgentEvalCaseResultPageResponse(BaseModel):
+    run_id: str
+    total: int
+    page: int
+    page_size: int
+    items: list[AiAgentEvalCaseResultItem]
+
+
+class AiAgentEvalGateDecisionItem(BaseModel):
+    gate_id: str
+    baseline_run_id: str
+    candidate_run_id: str
+    agent_name: str
+    dataset_version: str
+    decision: Literal["pass", "reject", "manual_review"]
+    comparison: dict
+    reasons: list[dict]
+    rule_snapshot: dict
+    created_at: str
+
+
+class AiAgentEvalGateDecisionPageResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[AiAgentEvalGateDecisionItem]

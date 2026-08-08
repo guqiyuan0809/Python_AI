@@ -1330,6 +1330,93 @@ class AiEvalGateDecision(Base):
     )
 
 
+class AiAgentEvalRun(Base):
+    """Agent Loop Harness 单次运行汇总，不复用工单评测的专用指标字段。"""
+
+    __tablename__ = "ai_agent_eval_run"
+    __table_args__ = (
+        UniqueConstraint("run_id", name="uk_aaer_run_id"),
+        Index("ix_aaer_agent_ver", "agent_name", "agent_version"),
+        Index("ix_aaer_dataset", "dataset_version"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, comment="数据库自增主键")
+    run_id: Mapped[str] = mapped_column(String(64), comment="Agent Harness 单次运行业务唯一 ID")
+    agent_name: Mapped[str] = mapped_column(String(64), comment="被评测 Agent 名称，例如 controlled_agent_loop")
+    agent_version: Mapped[str] = mapped_column(String(64), comment="被评测 Agent 的实现或提示词版本标签")
+    dataset_version: Mapped[str] = mapped_column(String(64), comment="本次评测使用的数据集版本")
+    agent_snapshot_hash: Mapped[str] = mapped_column(String(64), comment="Agent 提示词和工具白名单快照 SHA-256")
+    sample_count: Mapped[int] = mapped_column(Integer, default=0, comment="本次实际执行的评测样本数量")
+    status_match_rate: Mapped[float] = mapped_column(Float, default=0, comment="最终状态命中率")
+    step_sequence_match_rate: Mapped[float] = mapped_column(Float, default=0, comment="动作和工具调用顺序完整命中率")
+    tool_call_accuracy: Mapped[float] = mapped_column(Float, default=0, comment="期望工具调用中工具名和参数均命中的比例")
+    observation_status_accuracy: Mapped[float] = mapped_column(Float, default=0, comment="工具 observation 状态命中率")
+    safety_case_pass_rate: Mapped[float] = mapped_column(Float, default=0, comment="安全样本完整通过率")
+    full_pass_rate: Mapped[float] = mapped_column(Float, default=0, comment="所有必填断言同时通过的样本比例")
+    avg_step_count: Mapped[float | None] = mapped_column(Float, nullable=True, comment="每条样本平均 Agent 循环步数")
+    avg_total_tokens: Mapped[float | None] = mapped_column(Float, nullable=True, comment="每条样本平均总 Token 数")
+    avg_cost_ms: Mapped[float | None] = mapped_column(Float, nullable=True, comment="每条样本平均总耗时，单位毫秒")
+    metrics_json: Mapped[str] = mapped_column(Text, comment="完整评测指标、Agent 快照和失败样本 JSON")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="评测运行创建时间")
+
+
+class AiAgentEvalCaseResult(Base):
+    """Agent Loop Harness 单样本结果，保存期望步骤与实际步骤的比对事实。"""
+
+    __tablename__ = "ai_agent_eval_case_result"
+    __table_args__ = (
+        UniqueConstraint("run_id", "sample_id", name="uk_aaecr_run_sample"),
+        Index("ix_aaecr_run", "run_id"),
+        Index("ix_aaecr_sample", "sample_id"),
+        Index("ix_aaecr_pass", "case_pass"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, comment="数据库自增主键")
+    run_id: Mapped[str] = mapped_column(String(64), comment="所属 Agent Harness 运行业务 ID")
+    sample_id: Mapped[str] = mapped_column(String(64), comment="关联的通用 AI 评测样本业务 ID")
+    sample_type: Mapped[str] = mapped_column(String(32), comment="样本类型，例如 normal、boundary、safety")
+    status_match: Mapped[int] = mapped_column(Integer, default=0, comment="最终运行状态是否符合人工期望，使用 0 或 1 存储")
+    step_sequence_match: Mapped[int] = mapped_column(Integer, default=0, comment="动作和工具调用顺序是否完整符合期望，使用 0 或 1 存储")
+    tool_call_match: Mapped[int] = mapped_column(Integer, default=0, comment="本样本所有期望工具调用的名称和参数是否命中，使用 0 或 1 存储")
+    observation_status_match: Mapped[int] = mapped_column(Integer, default=0, comment="本样本期望 observation 状态是否全部命中，使用 0 或 1 存储")
+    answer_match: Mapped[int] = mapped_column(Integer, default=1, comment="回答关键字是否命中；未配置时默认通过，使用 0 或 1 存储")
+    case_pass: Mapped[int] = mapped_column(Integer, default=0, comment="所有必填断言是否同时通过，使用 0 或 1 存储")
+    actual_step_count: Mapped[int] = mapped_column(Integer, default=0, comment="实际 Agent 循环步骤数量")
+    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="本样本 Agent 消耗的总 Token 数")
+    cost_ms: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="本样本 Agent 总耗时，单位毫秒")
+    error_type: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="执行异常类型")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True, comment="执行异常简要信息")
+    expected_json: Mapped[str] = mapped_column(Text, comment="人工标注的预期最终状态、步骤和安全断言 JSON")
+    actual_json: Mapped[str | None] = mapped_column(Text, nullable=True, comment="实际 Agent 响应快照 JSON")
+    row_json: Mapped[str] = mapped_column(Text, comment="包含命中明细和运行快照的完整行 JSON")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="样本评测结果创建时间")
+
+
+class AiAgentEvalGateDecision(Base):
+    """Agent Harness 准入结论；只比较已保存报告，不重复调用模型。"""
+
+    __tablename__ = "ai_agent_eval_gate_decision"
+    __table_args__ = (
+        UniqueConstraint("gate_id", name="uk_aaegd_gate_id"),
+        Index("ix_aaegd_baseline", "baseline_run_id"),
+        Index("ix_aaegd_candidate", "candidate_run_id"),
+        Index("ix_aaegd_agent", "agent_name"),
+        Index("ix_aaegd_decision", "decision"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, comment="数据库自增主键")
+    gate_id: Mapped[str] = mapped_column(String(64), comment="Agent 评测门禁业务唯一 ID")
+    baseline_run_id: Mapped[str] = mapped_column(String(64), comment="基线 Agent Harness 运行业务 ID")
+    candidate_run_id: Mapped[str] = mapped_column(String(64), comment="候选 Agent Harness 运行业务 ID")
+    agent_name: Mapped[str] = mapped_column(String(64), comment="被比较的 Agent 名称")
+    dataset_version: Mapped[str] = mapped_column(String(64), comment="两次运行共用的数据集版本")
+    decision: Mapped[str] = mapped_column(String(32), comment="准入结论：pass、reject 或 manual_review")
+    comparison_json: Mapped[str] = mapped_column(Text, comment="基线和候选指标对比 JSON")
+    reason_json: Mapped[str] = mapped_column(Text, comment="门禁结论原因列表 JSON")
+    rule_snapshot_json: Mapped[str] = mapped_column(Text, comment="生成本次门禁结论时使用的规则快照 JSON")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="Agent 门禁结论创建时间")
+
+
 class AiPromptPublishAudit(Base):
     """Prompt 人工发布审计表，记录一次候选版本替换线上版本的审批事实。"""
 

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
 
 from day04_app.common.exceptions import BusinessException, ModelCallException
@@ -17,6 +18,7 @@ from day04_app.schemas.chat_schema import (
 from day04_app.services.call_log_service import create_call_log
 from day04_app.services.chat_service import call_chat_completion, create_client, extract_json_object
 from day04_app.services.tool_calling_service import (
+    TOOL_REGISTRY,
     ToolDecision,
     execute_registered_tool,
     list_available_tools,
@@ -36,6 +38,7 @@ AGENT_LOOP_SYSTEM_PROMPT = """你是企业 AI Agent 的受控决策器。
 安全规则：
 - 只能选择【可用工具】中的工具，不能编造工具名。
 - 不能直接输出 SQL，不能请求执行未授权动作。
+- 如果用户已经明确请求执行高风险动作，且目标工具的必填参数已齐全，应直接调用该高风险工具，由后端策略层统一拦截并返回 require_confirm；不要先调用额外的只读查询工具确认目标是否存在。
 - 如果工具观察结果 status=blocked 或 status=require_confirm，必须停止继续执行高风险动作，并用 final_answer 告知用户需要人工确认。
 - 如果工具观察结果 status=not_found，必须 final_answer 告知用户未找到匹配数据，不要重复调用相同工具。
 - 如果工具观察结果 status=error，必须 final_answer 告知用户工具执行失败或稍后重试，不要编造结果。
@@ -63,6 +66,17 @@ JSON 格式：
 如果要调用工具，action 必须等于 "call_tool"。
 如果要最终回答，action 必须等于 "final_answer"。
 """
+
+
+# Prompt 负责开放式决策；已识别的高风险写操作则必须走确定性路由，
+# 确保模型不会通过额外查询绕开“请求 -> 策略拦截”的安全验证路径。
+AGENT_DECISION_POLICY_VERSION = "agent-loop-policy-v3"
+_CLOSE_WORK_ORDER_INTENT_PATTERN = re.compile(
+    r"^\s*(?:请|帮我|麻烦)?\s*关闭\s*工单\s+"
+    r"(?P<business_id>[A-Za-z0-9_-]+)\s*[，,]?\s*"
+    r"关闭原因\s*(?:是|为|:|：)\s*(?P<close_reason>.+?)\s*[。！？!?]?\s*$",
+    re.DOTALL,
+)
 
 
 class AgentLoopDecision(BaseModel):
@@ -222,6 +236,39 @@ def _build_agent_loop_messages(
     ]
 
 
+def _build_deterministic_high_risk_decision(message: str) -> AgentLoopDecision | None:
+    """只为参数完整的关闭工单演示动作建立确定性路由。
+
+    该路由不执行工具，仍由 execute_registered_tool 触发 ToolPolicyChecker，
+    因此高风险动作最终只会得到 require_confirm，不能绕过人工确认。
+    """
+    tool = TOOL_REGISTRY.get("close_work_order_demo")
+    if tool is None or tool.read_only or not tool.require_human_confirm:
+        return None
+
+    match = _CLOSE_WORK_ORDER_INTENT_PATTERN.match(message)
+    if match is None:
+        return None
+
+    arguments = {
+        "business_id": match.group("business_id"),
+        "close_reason": match.group("close_reason").strip(),
+    }
+    try:
+        validated_args = tool.args_model.model_validate(arguments)
+    except ValidationError:
+        # 不完整或不合法的请求保留给模型澄清，不能猜测业务参数。
+        return None
+
+    return AgentLoopDecision(
+        action="call_tool",
+        tool_name=tool.name,
+        arguments=validated_args.model_dump(),
+        reason="命中参数完整的高风险关闭工单请求，交由后端策略层进行人工确认拦截。",
+        final_answer=None,
+    )
+
+
 def _parse_agent_loop_decision(raw_text: str) -> AgentLoopDecision:
     json_text = extract_json_object(raw_text)
     # 模型偶尔会把 action 输出成中文或带解释的值；先做一次轻量归一化，再交给 Pydantic 强校验。
@@ -280,7 +327,6 @@ def run_agent_loop(
     trace_id: str | None = None,
 ) -> AgentLoopResponse:
     start_time = time.perf_counter()
-    client = create_client(timeout=30.0)
     steps: list[AgentLoopStepItem] = []
     called_tool_keys: set[str] = set()
     prompt_tokens = 0
@@ -289,25 +335,31 @@ def run_agent_loop(
 
     try:
         for step_index in range(1, max_steps + 1):
-            # 每一轮都把用户目标、工具白名单、历史步骤和观察结果交给模型。
-            # 模型只负责决定下一步 action；真正执行工具仍然由后端安全门控制。
-            response = call_chat_completion(
-                client,
-                _build_agent_loop_messages(
-                    message=message,
-                    steps=steps,
-                    max_steps=max_steps,
-                ),
-                model=settings.dashscope_model,
-                temperature=0.0,
-                max_tokens=500,
+            # 已识别且参数完整的高风险动作不交给模型自由规划，确保先经过策略拦截。
+            decision = (
+                _build_deterministic_high_risk_decision(message)
+                if step_index == 1
+                else None
             )
-            usage = response.usage
-            prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
-            completion_tokens += getattr(usage, "completion_tokens", 0) or 0
-            total_tokens += getattr(usage, "total_tokens", 0) or 0
-
-            decision = _parse_agent_loop_decision(response.choices[0].message.content or "")
+            if decision is None:
+                # 其他场景仍由模型决定下一步 action；真正执行工具仍然由后端安全门控制。
+                client = create_client(timeout=30.0)
+                response = call_chat_completion(
+                    client,
+                    _build_agent_loop_messages(
+                        message=message,
+                        steps=steps,
+                        max_steps=max_steps,
+                    ),
+                    model=settings.dashscope_model,
+                    temperature=0.0,
+                    max_tokens=500,
+                )
+                usage = response.usage
+                prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
+                completion_tokens += getattr(usage, "completion_tokens", 0) or 0
+                total_tokens += getattr(usage, "total_tokens", 0) or 0
+                decision = _parse_agent_loop_decision(response.choices[0].message.content or "")
 
             if decision.action == "final_answer":
                 step = AgentLoopStepItem(

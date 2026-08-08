@@ -27,6 +27,7 @@ OUTBOX_EVENT_SESSION_CHAT = "session_chat.execute"
 OUTBOX_EVENT_SESSION_RAG = "session_rag.execute"
 OUTBOX_EVENT_WORK_ORDER_ANALYSIS = "work_order_analysis.execute"
 OUTBOX_EVENT_WORK_ORDER_EVAL = "work_order_eval.execute"
+OUTBOX_EVENT_AGENT_LOOP_EVAL = "agent_loop_eval.execute"
 OUTBOX_EVENT_KNOWLEDGE_CONTEXTUAL_INDEX = "knowledge_contextual_index.execute"
 
 
@@ -100,6 +101,24 @@ def _build_work_order_eval_payload(
             "prompt_name": prompt_name,
             "prompt_version": prompt_version,
             "dataset_version": dataset_version,
+        },
+        ensure_ascii=False,
+    )
+
+
+def _build_agent_loop_eval_payload(
+    task: AiAsyncTask,
+    agent_version: str,
+    dataset_version: str,
+    sample_limit: int | None,
+) -> str:
+    return json.dumps(
+        {
+            "task_id": task.task_id,
+            "trace_id": task.trace_id,
+            "agent_version": agent_version,
+            "dataset_version": dataset_version,
+            "sample_limit": sample_limit,
         },
         ensure_ascii=False,
     )
@@ -198,6 +217,28 @@ def _create_work_order_eval_outbox_event(
             prompt_name=prompt_name,
             prompt_version=prompt_version,
             dataset_version=dataset_version,
+        ),
+        status=OUTBOX_STATUS_PENDING,
+        available_at=datetime.now() + timedelta(seconds=delay_seconds),
+    )
+
+
+def _create_agent_loop_eval_outbox_event(
+    task: AiAsyncTask,
+    agent_version: str,
+    dataset_version: str,
+    sample_limit: int | None,
+    delay_seconds: int = 0,
+) -> AiTaskOutbox:
+    return AiTaskOutbox(
+        event_id=next_snowflake_id(),
+        task_id=task.task_id,
+        event_type=OUTBOX_EVENT_AGENT_LOOP_EVAL,
+        payload=_build_agent_loop_eval_payload(
+            task,
+            agent_version=agent_version,
+            dataset_version=dataset_version,
+            sample_limit=sample_limit,
         ),
         status=OUTBOX_STATUS_PENDING,
         available_at=datetime.now() + timedelta(seconds=delay_seconds),
@@ -350,6 +391,47 @@ def create_async_work_order_eval_task(
     )
 
     # 评测任务和 Outbox 在同一事务提交，避免出现有任务但没有 MQ 投递事件。
+    db.add_all([task, outbox_event])
+    db.commit()
+    db.refresh(task)
+    db.refresh(outbox_event)
+    return task, outbox_event
+
+
+def create_async_agent_loop_eval_task(
+    db: Session,
+    *,
+    trace_id: str | None,
+    agent_version: str,
+    dataset_version: str,
+    sample_limit: int | None,
+    max_retries: int,
+) -> tuple[AiAsyncTask, AiTaskOutbox]:
+    """提交 Agent Harness；它可能有多轮模型调用，复用 Outbox 避免 HTTP 长时间阻塞。"""
+    input_text = json.dumps(
+        {
+            "agent_version": agent_version,
+            "dataset_version": dataset_version,
+            "sample_limit": sample_limit,
+        },
+        ensure_ascii=False,
+    )
+    task = AiAsyncTask(
+        task_id=next_snowflake_id(),
+        trace_id=trace_id,
+        session_id="system_eval",
+        task_type="agent_loop_eval",
+        input_text=input_text,
+        model=None,
+        max_retries=max_retries,
+        status=TASK_STATUS_PENDING,
+    )
+    outbox_event = _create_agent_loop_eval_outbox_event(
+        task,
+        agent_version=agent_version,
+        dataset_version=dataset_version,
+        sample_limit=sample_limit,
+    )
     db.add_all([task, outbox_event])
     db.commit()
     db.refresh(task)
@@ -793,6 +875,46 @@ def prepare_work_order_eval_task_retry(
         delay_seconds=delay_seconds,
     )
 
+    db.add(outbox_event)
+    db.commit()
+    db.refresh(task)
+    db.refresh(outbox_event)
+    return task, outbox_event
+
+
+def prepare_agent_loop_eval_task_retry(
+    db: Session,
+    *,
+    task_id: str,
+    agent_version: str,
+    dataset_version: str,
+    sample_limit: int | None,
+    delay_seconds: int = 0,
+) -> tuple[AiAsyncTask, AiTaskOutbox]:
+    """重试 Agent Harness 时复用原始评测范围，避免重试扩大模型调用成本。"""
+    task = get_async_task(db, task_id)
+    if task.status != TASK_STATUS_ERROR:
+        raise BusinessException(code=40008, message="只有失败任务可以重试")
+    if task.retry_count >= task.max_retries:
+        raise BusinessException(code=40009, message="任务已达到最大重试次数，请人工处理")
+
+    task.status = TASK_STATUS_PENDING
+    task.broker_task_id = None
+    task.result_text = None
+    task.prompt_tokens = None
+    task.completion_tokens = None
+    task.total_tokens = None
+    task.cost_ms = None
+    task.error_type = None
+    task.error_message = None
+    task.retry_count += 1
+    outbox_event = _create_agent_loop_eval_outbox_event(
+        task,
+        agent_version=agent_version,
+        dataset_version=dataset_version,
+        sample_limit=sample_limit,
+        delay_seconds=delay_seconds,
+    )
     db.add(outbox_event)
     db.commit()
     db.refresh(task)

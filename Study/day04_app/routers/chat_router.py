@@ -17,6 +17,12 @@ from day04_app.database import get_db
 from day04_app.schemas.chat_schema import (
     AiCallLogItem,
     AiCallLogPageResponse,
+    AiAgentEvalCaseResultItem,
+    AiAgentEvalCaseResultPageResponse,
+    AiAgentEvalGateDecisionItem,
+    AiAgentEvalGateDecisionPageResponse,
+    AiAgentEvalRunItem,
+    AiAgentEvalRunPageResponse,
     AiEvalDatasetItem,
     AiEvalDatasetPageResponse,
     AiEvalGateDecisionItem,
@@ -37,6 +43,8 @@ from day04_app.schemas.chat_schema import (
     AiPromptRollbackAuditPageResponse,
     AgentLoopRequest,
     AgentLoopResponse,
+    AgentEvalGateCompareRequest,
+    AsyncAgentLoopEvalTaskRequest,
     AsyncWorkOrderAnalysisTaskRequest,
     AsyncWorkOrderEvalTaskRequest,
     AsyncSessionChatTaskRequest,
@@ -68,7 +76,16 @@ from day04_app.schemas.chat_schema import (
     WorkOrderAnalysisResponse,
 )
 from day04_app.services.agent_loop_service import run_agent_loop
+from day04_app.services.agent_loop_eval_gate_service import (
+    create_agent_eval_gate_decision,
+    list_agent_eval_gate_decisions,
+)
+from day04_app.services.agent_loop_eval_query_service import (
+    list_agent_eval_case_results,
+    list_agent_eval_runs,
+)
 from day04_app.services.async_task_service import (
+    create_async_agent_loop_eval_task,
     create_async_session_chat_task,
     create_async_work_order_eval_task,
     create_async_work_order_analysis_task,
@@ -264,6 +281,66 @@ def to_eval_case_result_item(case_result) -> AiEvalCaseResultItem:
         actual=parse_json_or_none(case_result.actual_json),
         row=parse_json_or_none(case_result.row_json),
         created_at=case_result.created_at.isoformat(timespec="seconds"),
+    )
+
+
+def to_agent_eval_run_item(eval_run) -> AiAgentEvalRunItem:
+    return AiAgentEvalRunItem(
+        run_id=eval_run.run_id,
+        agent_name=eval_run.agent_name,
+        agent_version=eval_run.agent_version,
+        dataset_version=eval_run.dataset_version,
+        agent_snapshot_hash=eval_run.agent_snapshot_hash,
+        sample_count=eval_run.sample_count,
+        status_match_rate=eval_run.status_match_rate,
+        step_sequence_match_rate=eval_run.step_sequence_match_rate,
+        tool_call_accuracy=eval_run.tool_call_accuracy,
+        observation_status_accuracy=eval_run.observation_status_accuracy,
+        safety_case_pass_rate=eval_run.safety_case_pass_rate,
+        full_pass_rate=eval_run.full_pass_rate,
+        avg_step_count=eval_run.avg_step_count,
+        avg_total_tokens=eval_run.avg_total_tokens,
+        avg_cost_ms=eval_run.avg_cost_ms,
+        metrics=parse_json_or_none(eval_run.metrics_json),
+        created_at=eval_run.created_at.isoformat(timespec="seconds"),
+    )
+
+
+def to_agent_eval_case_result_item(case_result) -> AiAgentEvalCaseResultItem:
+    return AiAgentEvalCaseResultItem(
+        run_id=case_result.run_id,
+        sample_id=case_result.sample_id,
+        sample_type=case_result.sample_type,
+        status_match=case_result.status_match == 1,
+        step_sequence_match=case_result.step_sequence_match == 1,
+        tool_call_match=case_result.tool_call_match == 1,
+        observation_status_match=case_result.observation_status_match == 1,
+        answer_match=case_result.answer_match == 1,
+        case_pass=case_result.case_pass == 1,
+        actual_step_count=case_result.actual_step_count,
+        total_tokens=case_result.total_tokens,
+        cost_ms=case_result.cost_ms,
+        error_type=case_result.error_type,
+        error_message=case_result.error_message,
+        expected=parse_json_or_none(case_result.expected_json),
+        actual=parse_json_or_none(case_result.actual_json),
+        row=parse_json_or_none(case_result.row_json),
+        created_at=case_result.created_at.isoformat(timespec="seconds"),
+    )
+
+
+def to_agent_eval_gate_decision_item(gate_decision) -> AiAgentEvalGateDecisionItem:
+    return AiAgentEvalGateDecisionItem(
+        gate_id=gate_decision.gate_id,
+        baseline_run_id=gate_decision.baseline_run_id,
+        candidate_run_id=gate_decision.candidate_run_id,
+        agent_name=gate_decision.agent_name,
+        dataset_version=gate_decision.dataset_version,
+        decision=gate_decision.decision,
+        comparison=parse_json_or_none(gate_decision.comparison_json) or {},
+        reasons=parse_json_or_none(gate_decision.reason_json) or [],
+        rule_snapshot=parse_json_or_none(gate_decision.rule_snapshot_json) or {},
+        created_at=gate_decision.created_at.isoformat(timespec="seconds"),
     )
 
 
@@ -937,6 +1014,152 @@ def list_ai_eval_gate_records(
             page_size=page_size,
             items=[to_eval_gate_decision_item(item) for item in gate_decisions],
         ),
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.get(
+    "/agent-eval-runs",
+    response_model=ApiResponse[AiAgentEvalRunPageResponse],
+    summary="分页查询 Agent Loop Harness 运行记录",
+)
+def list_agent_loop_eval_runs(
+    request: Request,
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    agent_name: str | None = Query(None, description="Agent 名称，例如 controlled_agent_loop"),
+    agent_version: str | None = Query(None, description="Agent 候选版本标签"),
+    dataset_version: str | None = Query(None, description="评测数据集版本"),
+    db: Session = Depends(get_db),
+) -> ApiResponse[AiAgentEvalRunPageResponse]:
+    eval_runs, total = list_agent_eval_runs(
+        db,
+        page=page,
+        page_size=page_size,
+        agent_name=agent_name,
+        agent_version=agent_version,
+        dataset_version=dataset_version,
+    )
+    return success(
+        AiAgentEvalRunPageResponse(
+            total=total,
+            page=page,
+            page_size=page_size,
+            items=[to_agent_eval_run_item(item) for item in eval_runs],
+        ),
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.get(
+    "/agent-eval-runs/{run_id}/cases",
+    response_model=ApiResponse[AiAgentEvalCaseResultPageResponse],
+    summary="分页查询某次 Agent Loop Harness 的样本明细",
+)
+def list_agent_loop_eval_case_results(
+    run_id: str,
+    request: Request,
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(50, ge=1, le=200, description="每页数量"),
+    only_failed: bool = Query(False, description="是否只查看断言未通过的样本"),
+    db: Session = Depends(get_db),
+) -> ApiResponse[AiAgentEvalCaseResultPageResponse]:
+    cases, total = list_agent_eval_case_results(
+        db,
+        run_id=run_id,
+        page=page,
+        page_size=page_size,
+        only_failed=only_failed,
+    )
+    return success(
+        AiAgentEvalCaseResultPageResponse(
+            run_id=run_id,
+            total=total,
+            page=page,
+            page_size=page_size,
+            items=[to_agent_eval_case_result_item(item) for item in cases],
+        ),
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.post(
+    "/agent-eval-gates/compare",
+    response_model=ApiResponse[AiAgentEvalGateDecisionItem],
+    summary="比较基线与候选 Agent Loop Harness 的准入结果",
+)
+def compare_agent_loop_eval_gate(
+    request_body: AgentEvalGateCompareRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[AiAgentEvalGateDecisionItem]:
+    # Gate 只读取已保存报告比较指标，不会触发新的模型或工具调用。
+    gate = create_agent_eval_gate_decision(
+        db,
+        baseline_run_id=request_body.baseline_run_id,
+        candidate_run_id=request_body.candidate_run_id,
+    )
+    return success(
+        to_agent_eval_gate_decision_item(gate),
+        message="Agent 评测准入门禁已完成",
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.get(
+    "/agent-eval-gates",
+    response_model=ApiResponse[AiAgentEvalGateDecisionPageResponse],
+    summary="分页查询 Agent Loop Harness 准入记录",
+)
+def list_agent_loop_eval_gate_records(
+    request: Request,
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    agent_name: str | None = Query(None, description="Agent 名称，例如 controlled_agent_loop"),
+    decision: str | None = Query(None, description="门禁结论，例如 pass/reject/manual_review"),
+    db: Session = Depends(get_db),
+) -> ApiResponse[AiAgentEvalGateDecisionPageResponse]:
+    gates, total = list_agent_eval_gate_decisions(
+        db,
+        page=page,
+        page_size=page_size,
+        agent_name=agent_name,
+        decision=decision,
+    )
+    return success(
+        AiAgentEvalGateDecisionPageResponse(
+            total=total,
+            page=page,
+            page_size=page_size,
+            items=[to_agent_eval_gate_decision_item(item) for item in gates],
+        ),
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.post(
+    "/agent-evals/run/async",
+    response_model=ApiResponse[AsyncTaskSubmitResponse],
+    summary="异步触发 Agent Loop Harness",
+)
+def submit_async_agent_loop_eval(
+    request_body: AsyncAgentLoopEvalTaskRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[AsyncTaskSubmitResponse]:
+    task, outbox_event = create_async_agent_loop_eval_task(
+        db,
+        trace_id=request.state.trace_id,
+        agent_version=request_body.agent_version,
+        dataset_version=request_body.dataset_version,
+        sample_limit=request_body.sample_limit,
+        max_retries=settings.async_task_max_retries,
+    )
+    # 评测会多次调用模型，提交接口只负责可靠投递；前端再轮询 task_id。
+    dispatch_outbox_event(db, outbox_event.event_id)
+    return success(
+        AsyncTaskSubmitResponse(task_id=task.task_id, status=task.status),
+        message="Agent Loop Harness 任务已提交",
         trace_id=request.state.trace_id,
     )
 
