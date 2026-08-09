@@ -27,6 +27,7 @@ OUTBOX_EVENT_SESSION_CHAT = "session_chat.execute"
 OUTBOX_EVENT_SESSION_RAG = "session_rag.execute"
 OUTBOX_EVENT_WORK_ORDER_ANALYSIS = "work_order_analysis.execute"
 OUTBOX_EVENT_WORK_ORDER_EVAL = "work_order_eval.execute"
+OUTBOX_EVENT_AGENT_LOOP = "agent_loop.execute"
 OUTBOX_EVENT_AGENT_LOOP_EVAL = "agent_loop_eval.execute"
 OUTBOX_EVENT_KNOWLEDGE_CONTEXTUAL_INDEX = "knowledge_contextual_index.execute"
 
@@ -119,6 +120,22 @@ def _build_agent_loop_eval_payload(
             "agent_version": agent_version,
             "dataset_version": dataset_version,
             "sample_limit": sample_limit,
+        },
+        ensure_ascii=False,
+    )
+
+
+def _build_agent_loop_payload(
+    task: AiAsyncTask,
+    max_steps: int,
+) -> str:
+    """持久化可重试 Worker 执行所需的业务 Agent 输入快照。"""
+    return json.dumps(
+        {
+            "task_id": task.task_id,
+            "trace_id": task.trace_id,
+            "message": task.input_text,
+            "max_steps": max_steps,
         },
         ensure_ascii=False,
     )
@@ -240,6 +257,21 @@ def _create_agent_loop_eval_outbox_event(
             dataset_version=dataset_version,
             sample_limit=sample_limit,
         ),
+        status=OUTBOX_STATUS_PENDING,
+        available_at=datetime.now() + timedelta(seconds=delay_seconds),
+    )
+
+
+def _create_agent_loop_outbox_event(
+    task: AiAsyncTask,
+    max_steps: int,
+    delay_seconds: int = 0,
+) -> AiTaskOutbox:
+    return AiTaskOutbox(
+        event_id=next_snowflake_id(),
+        task_id=task.task_id,
+        event_type=OUTBOX_EVENT_AGENT_LOOP,
+        payload=_build_agent_loop_payload(task, max_steps),
         status=OUTBOX_STATUS_PENDING,
         available_at=datetime.now() + timedelta(seconds=delay_seconds),
     )
@@ -432,6 +464,35 @@ def create_async_agent_loop_eval_task(
         dataset_version=dataset_version,
         sample_limit=sample_limit,
     )
+    db.add_all([task, outbox_event])
+    db.commit()
+    db.refresh(task)
+    db.refresh(outbox_event)
+    return task, outbox_event
+
+
+def create_async_agent_loop_task(
+    db: Session,
+    *,
+    message: str,
+    max_steps: int,
+    trace_id: str | None,
+    model: str | None,
+    max_retries: int,
+) -> tuple[AiAsyncTask, AiTaskOutbox]:
+    """提交一条在线 Agent 请求，不与批量 Harness 评测混淆。"""
+    task = AiAsyncTask(
+        task_id=next_snowflake_id(),
+        trace_id=trace_id,
+        # 当前在线 Agent Loop 不依赖聊天会话，使用系统任务标识而不伪造 ChatSession 记录。
+        session_id="system_agent",
+        task_type="agent_loop",
+        input_text=message,
+        model=model,
+        max_retries=max_retries,
+        status=TASK_STATUS_PENDING,
+    )
+    outbox_event = _create_agent_loop_outbox_event(task, max_steps=max_steps)
     db.add_all([task, outbox_event])
     db.commit()
     db.refresh(task)
@@ -913,6 +974,61 @@ def prepare_agent_loop_eval_task_retry(
         agent_version=agent_version,
         dataset_version=dataset_version,
         sample_limit=sample_limit,
+        delay_seconds=delay_seconds,
+    )
+    db.add(outbox_event)
+    db.commit()
+    db.refresh(task)
+    db.refresh(outbox_event)
+    return task, outbox_event
+
+
+def get_agent_loop_retry_parameters(db: Session, task_id: str) -> int:
+    """从已持久化的 Outbox 快照还原原始 Agent 步数上限。"""
+    latest_event = db.scalars(
+        select(AiTaskOutbox)
+        .where(
+            AiTaskOutbox.task_id == task_id,
+            AiTaskOutbox.event_type == OUTBOX_EVENT_AGENT_LOOP,
+        )
+        .order_by(AiTaskOutbox.id.desc())
+        .limit(1)
+    ).first()
+    if latest_event is None:
+        raise BusinessException(code=50064, message="Agent Loop 任务缺少 Outbox 参数快照，无法重试")
+    try:
+        return int(json.loads(latest_event.payload)["max_steps"])
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise BusinessException(code=50064, message="Agent Loop Outbox 参数快照已损坏，无法重试") from exc
+
+
+def prepare_agent_loop_task_retry(
+    db: Session,
+    *,
+    task_id: str,
+    max_steps: int,
+    delay_seconds: int = 0,
+) -> tuple[AiAsyncTask, AiTaskOutbox]:
+    """按原始受限执行计划重试在线 Agent 请求。"""
+    task = get_async_task(db, task_id)
+    if task.status != TASK_STATUS_ERROR:
+        raise BusinessException(code=40008, message="只有失败任务可以重试")
+    if task.retry_count >= task.max_retries:
+        raise BusinessException(code=40009, message="任务已达到最大重试次数，请人工处理")
+
+    task.status = TASK_STATUS_PENDING
+    task.broker_task_id = None
+    task.result_text = None
+    task.prompt_tokens = None
+    task.completion_tokens = None
+    task.total_tokens = None
+    task.cost_ms = None
+    task.error_type = None
+    task.error_message = None
+    task.retry_count += 1
+    outbox_event = _create_agent_loop_outbox_event(
+        task,
+        max_steps=max_steps,
         delay_seconds=delay_seconds,
     )
     db.add(outbox_event)

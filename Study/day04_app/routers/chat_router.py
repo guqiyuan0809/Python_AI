@@ -17,6 +17,8 @@ from day04_app.database import get_db
 from day04_app.schemas.chat_schema import (
     AiCallLogItem,
     AiCallLogPageResponse,
+    AiTraceObservabilityResponse,
+    AiTraceTaskItem,
     AiAgentEvalCaseResultItem,
     AiAgentEvalCaseResultPageResponse,
     AiAgentEvalGateDecisionItem,
@@ -44,6 +46,7 @@ from day04_app.schemas.chat_schema import (
     AgentLoopRequest,
     AgentLoopResponse,
     AgentEvalGateCompareRequest,
+    AsyncAgentLoopTaskRequest,
     AsyncAgentLoopEvalTaskRequest,
     AsyncWorkOrderAnalysisTaskRequest,
     AsyncWorkOrderEvalTaskRequest,
@@ -85,19 +88,28 @@ from day04_app.services.agent_loop_eval_query_service import (
     list_agent_eval_runs,
 )
 from day04_app.services.async_task_service import (
+    create_async_agent_loop_task,
     create_async_agent_loop_eval_task,
     create_async_session_chat_task,
     create_async_work_order_eval_task,
     create_async_work_order_analysis_task,
     get_session_rag_retry_parameters,
+    get_agent_loop_retry_parameters,
     get_contextual_index_retry_parameters,
     get_async_task,
     mark_timeout_tasks_error,
     prepare_task_retry,
     prepare_session_rag_task_retry,
+    prepare_agent_loop_task_retry,
     prepare_contextual_index_task_retry,
 )
-from day04_app.services.call_log_service import create_call_log, list_call_logs
+from day04_app.services.call_log_service import (
+    build_trace_metric_aggregate,
+    create_call_log,
+    get_trace_observability,
+    list_call_logs,
+    load_call_log_detail,
+)
 from day04_app.services.failure_sample_service import (
     convert_failure_sample_to_eval_sample,
     create_failure_sample,
@@ -112,12 +124,16 @@ from day04_app.services.prompt_publish_service import (
     rollback_prompt_version,
 )
 from day04_app.services.eval_master_service import (
+    get_active_prompt_version_for_runtime,
     list_eval_datasets,
     list_eval_samples_page,
     list_prompt_versions,
 )
 from day04_app.services.chat_service import (
-    analyze_work_order_structured,
+    analyze_work_order_structured_with_runtime_prompt,
+    get_active_work_order_analysis_repair_prompt,
+    get_work_order_analysis_prompt_identity,
+    get_work_order_analysis_repair_prompt_identity,
     parse_work_order_analysis,
     safe_chat,
     safe_chat_with_messages,
@@ -191,7 +207,14 @@ def to_call_log_item(call_log) -> AiCallLogItem:
         trace_id=call_log.trace_id,
         session_id=call_log.session_id,
         message_id=call_log.message_id,
+        task_id=call_log.task_id,
+        run_id=call_log.run_id,
         call_type=call_log.call_type,
+        stage=call_log.stage,
+        prompt_id=call_log.prompt_id,
+        prompt_name=call_log.prompt_name,
+        prompt_version=call_log.prompt_version,
+        prompt_template_hash=call_log.prompt_template_hash,
         model=call_log.model,
         prompt_tokens=call_log.prompt_tokens,
         completion_tokens=call_log.completion_tokens,
@@ -200,7 +223,26 @@ def to_call_log_item(call_log) -> AiCallLogItem:
         status=call_log.status,
         error_type=call_log.error_type,
         error_message=call_log.error_message,
+        detail=load_call_log_detail(call_log),
         created_at=call_log.created_at.isoformat(timespec="seconds"),
+    )
+
+
+def to_trace_task_item(task) -> AiTraceTaskItem:
+    return AiTraceTaskItem(
+        task_id=task.task_id,
+        trace_id=task.trace_id,
+        session_id=task.session_id,
+        message_id=task.message_id,
+        task_type=task.task_type,
+        status=task.status,
+        total_tokens=task.total_tokens,
+        cost_ms=task.cost_ms,
+        retry_count=task.retry_count,
+        error_type=task.error_type,
+        error_message=task.error_message,
+        created_at=task.created_at.isoformat(timespec="seconds"),
+        updated_at=task.updated_at.isoformat(timespec="seconds"),
     )
 
 
@@ -499,6 +541,32 @@ def agent_loop_chat(
 
 
 @router.post(
+    "/agent-loop/async",
+    response_model=ApiResponse[AsyncTaskSubmitResponse],
+    summary="异步执行一条在线 Agent Loop 请求",
+)
+def submit_async_agent_loop(
+    request_body: AsyncAgentLoopTaskRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[AsyncTaskSubmitResponse]:
+    task, outbox_event = create_async_agent_loop_task(
+        db,
+        message=request_body.message,
+        max_steps=request_body.max_steps,
+        trace_id=request.state.trace_id,
+        model=settings.dashscope_model,
+        max_retries=settings.async_task_max_retries,
+    )
+    dispatch_outbox_event(db, outbox_event.event_id)
+    return success(
+        AsyncTaskSubmitResponse(task_id=task.task_id, status=task.status),
+        message="Agent Loop 异步任务已提交",
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.post(
     "/structured/work-order/analyze",
     response_model=ApiResponse[WorkOrderAnalysisResponse],
     summary="结构化分析工单内容",
@@ -510,20 +578,31 @@ def analyze_work_order(
 ) -> ApiResponse[WorkOrderAnalysisResponse]:
     trace_id = request.state.trace_id
     start_time = time.perf_counter()
+    prompt = get_active_prompt_version_for_runtime(db, "work_order_analysis")
+    repair_prompt = get_active_work_order_analysis_repair_prompt(db)
+    prompt_identity = get_work_order_analysis_prompt_identity(prompt)
     try:
         # Day14 当前只验证“模型输出 JSON + Pydantic 校验”，暂时不走异步任务。
-        result = analyze_work_order_structured(request_body.content)
+        execution = analyze_work_order_structured_with_runtime_prompt(
+            request_body.content,
+            prompt,
+            repair_prompt,
+        )
+        result = execution.response
     except ModelCallException as exc:
         cost_ms = round((time.perf_counter() - start_time) * 1000)
         create_call_log(
             db,
             call_type="structured_work_order_analyze",
+            stage="prompt_model_generation",
             trace_id=trace_id,
-            model=settings.dashscope_model,
+            model=prompt.model or settings.dashscope_model,
             cost_ms=cost_ms,
             status="error",
             error_type=exc.error_type,
             error_message=exc.message,
+            **prompt_identity.as_call_log_fields(),
+            detail={"prompt_source": prompt_identity.prompt_source},
         )
         raise
 
@@ -543,14 +622,34 @@ def analyze_work_order(
     create_call_log(
         db,
         call_type="structured_work_order_analyze",
+        stage="prompt_model_generation",
         trace_id=trace_id,
-        model=settings.dashscope_model,
-        prompt_tokens=result.prompt_tokens,
-        completion_tokens=result.completion_tokens,
-        total_tokens=result.total_tokens,
-        cost_ms=cost_ms,
+        model=prompt.model or settings.dashscope_model,
+        prompt_tokens=execution.initial_usage.prompt_tokens,
+        completion_tokens=execution.initial_usage.completion_tokens,
+        total_tokens=execution.initial_usage.total_tokens,
+        cost_ms=execution.initial_usage.cost_ms,
         status="success",
+        **prompt_identity.as_call_log_fields(),
+        detail={"prompt_source": prompt_identity.prompt_source, "repair_count": result.repair_count},
     )
+    if execution.repair_usage:
+        create_call_log(
+            db,
+            call_type="structured_work_order_analyze",
+            stage="prompt_output_repair",
+            trace_id=trace_id,
+            model=repair_prompt.model or settings.dashscope_model,
+            prompt_tokens=execution.repair_usage.prompt_tokens,
+            completion_tokens=execution.repair_usage.completion_tokens,
+            total_tokens=execution.repair_usage.total_tokens,
+            cost_ms=execution.repair_usage.cost_ms,
+            status="success",
+            **get_work_order_analysis_repair_prompt_identity(
+                repair_prompt
+            ).as_call_log_fields(),
+            detail={"prompt_source": "database", "repair": True},
+        )
     return success(result, trace_id=trace_id)
 
 
@@ -1500,8 +1599,13 @@ def list_ai_call_logs(
     page_size: int = Query(20, ge=1, le=100, description="每页数量"),
     trace_id: str | None = Query(None, description="请求链路 ID，可选筛选条件"),
     session_id: str | None = Query(None, description="会话 ID，可选筛选条件"),
+    task_id: str | None = Query(None, description="异步任务 ID，可选筛选条件"),
+    call_type: str | None = Query(None, description="调用来源，例如 agent_loop"),
+    stage: str | None = Query(None, description="可观测阶段，例如 agent_tool_execution"),
     status: str | None = Query(None, description="调用状态，例如 success/error"),
     error_type: str | None = Query(None, description="错误类型，例如 MODEL_CALL_FAILED"),
+    prompt_name: str | None = Query(None, description="Prompt 名称，例如 rag_answer"),
+    prompt_version: str | None = Query(None, description="Prompt 版本，例如 code-v1"),
     db: Session = Depends(get_db),
 ) -> ApiResponse[AiCallLogPageResponse]:
     # 调用日志属于运维和排查视角，支持按 trace_id、session_id、status 过滤。
@@ -1511,8 +1615,13 @@ def list_ai_call_logs(
         page_size=page_size,
         trace_id=trace_id,
         session_id=session_id,
+        task_id=task_id,
+        call_type=call_type,
+        stage=stage,
         status=status,
         error_type=error_type,
+        prompt_name=prompt_name,
+        prompt_version=prompt_version,
     )
     return success(
         AiCallLogPageResponse(
@@ -1520,6 +1629,44 @@ def list_ai_call_logs(
             page=page,
             page_size=page_size,
             items=[to_call_log_item(call_log) for call_log in call_logs],
+        ),
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.get(
+    "/observability/traces/{trace_id}",
+    response_model=ApiResponse[AiTraceObservabilityResponse],
+    summary="按 trace_id 查询 AI 可观测链路",
+)
+def get_ai_trace_observability(
+    trace_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[AiTraceObservabilityResponse]:
+    """聚合 AI 调用事件和异步任务，适合作为排查单条链路的入口。"""
+    call_logs, tasks = get_trace_observability(db, trace_id=trace_id)
+    call_log_items = [to_call_log_item(call_log) for call_log in call_logs]
+    metrics = build_trace_metric_aggregate(call_logs, tasks)
+    return success(
+        AiTraceObservabilityResponse(
+            trace_id=trace_id,
+            call_logs=call_log_items,
+            tasks=[to_trace_task_item(task) for task in tasks],
+            # 兼容已有调用方：旧字段仍表示阶段事件的累计值。
+            total_tokens=metrics.event_total_tokens,
+            total_cost_ms=metrics.event_total_cost_ms,
+            error_count=sum(1 for item in call_log_items if item.status == "error"),
+            blocked_count=(
+                metrics.safety_interception_count + metrics.guardrail_stop_count
+            ),
+            event_total_tokens=metrics.event_total_tokens,
+            event_total_cost_ms=metrics.event_total_cost_ms,
+            end_to_end_total_tokens=metrics.end_to_end_total_tokens,
+            end_to_end_cost_ms=metrics.end_to_end_cost_ms,
+            end_to_end_metric_source=metrics.end_to_end_metric_source,
+            safety_interception_count=metrics.safety_interception_count,
+            guardrail_stop_count=metrics.guardrail_stop_count,
         ),
         trace_id=request.state.trace_id,
     )
@@ -1670,6 +1817,13 @@ def retry_async_task(
             use_reranker=use_reranker,
             rerank_top_n=rerank_top_n,
             score_threshold=score_threshold,
+        )
+    elif existing_task.task_type == "agent_loop":
+        max_steps = get_agent_loop_retry_parameters(db, task_id)
+        task, outbox_event = prepare_agent_loop_task_retry(
+            db,
+            task_id=task_id,
+            max_steps=max_steps,
         )
     elif existing_task.task_type == "knowledge_contextual_index":
         version_id, context_model, context_max_tokens = get_contextual_index_retry_parameters(

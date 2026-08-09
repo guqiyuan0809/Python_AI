@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
 
 from pydantic import ValidationError
@@ -18,6 +19,7 @@ from day04_app.models import (
     KnowledgeDocumentVersion,
 )
 from day04_app.schemas.knowledge_schema import ChunkSourceReference, MilvusChunkSearchItem
+from day04_app.services.call_log_service import create_call_log
 from day04_app.services.knowledge_embedding_service import generate_text_embeddings
 from day04_app.services.milvus_vector_store_service import (
     EMBEDDING_DIMENSION,
@@ -102,6 +104,10 @@ def _search_document_version_chunks(
     top_k: int,
     use_reranker: bool = False,
     rerank_top_n: int | None = None,
+    trace_id: str | None = None,
+    task_id: str | None = None,
+    session_id: str | None = None,
+    message_id: str | None = None,
 ) -> tuple[str, int, str, list[MilvusChunkSearchItem]]:
     """按已确认的单一版本检索并回填原文，避免两个版本的结果混在同一 Top-K。"""
     if version.embedding_model != settings.dashscope_embedding_model:
@@ -112,12 +118,27 @@ def _search_document_version_chunks(
         raise BusinessException(code=40964, message="active 索引版本不属于当前 Milvus Collection")
 
     # 查询文本只生成一次向量；候选 chunk 的向量早已离线写入 Milvus。
+    embedding_start_time = time.perf_counter()
     model, vectors = generate_text_embeddings([question])
     question_vector = vectors[0]
     if len(question_vector) != EMBEDDING_DIMENSION:
         raise BusinessException(code=50055, message="查询 Embedding 维度与 Milvus Collection 契约不一致")
+    create_call_log(
+        db,
+        call_type="session_rag",
+        stage="rag_query_embedding",
+        trace_id=trace_id,
+        task_id=task_id,
+        session_id=session_id,
+        message_id=message_id,
+        model=model,
+        cost_ms=round((time.perf_counter() - embedding_start_time) * 1000),
+        detail={"input_count": 1, "embedding_dimension": len(question_vector)},
+        commit=False,
+    )
 
     try:
+        vector_search_start_time = time.perf_counter()
         hits = search_chunk_vectors(
             version_id=version.version_id,
             question_vector=question_vector,
@@ -125,6 +146,22 @@ def _search_document_version_chunks(
         )
     except Exception as exc:
         raise BusinessException(code=50056, message="Milvus 向量检索失败，请查看服务日志") from exc
+    create_call_log(
+        db,
+        call_type="session_rag",
+        stage="rag_vector_search",
+        trace_id=trace_id,
+        task_id=task_id,
+        session_id=session_id,
+        message_id=message_id,
+        cost_ms=round((time.perf_counter() - vector_search_start_time) * 1000),
+        detail={
+            "version_id": version.version_id,
+            "requested_top_k": rerank_top_n if use_reranker and rerank_top_n else top_k,
+            "hit_count": len(hits),
+        },
+        commit=False,
+    )
 
     hit_ids = [str(_get_hit_field(hit, "chunk_id")) for hit in hits if _get_hit_field(hit, "chunk_id")]
     if not hit_ids:
@@ -184,7 +221,21 @@ def _search_document_version_chunks(
         items.append(item)
         rerank_documents.append(_build_rerank_document(item, chunk))
     if use_reranker and items:
+        rerank_start_time = time.perf_counter()
         reranked = rerank_chunks(question, rerank_documents, len(rerank_documents))
+        create_call_log(
+            db,
+            call_type="session_rag",
+            stage="rag_rerank",
+            trace_id=trace_id,
+            task_id=task_id,
+            session_id=session_id,
+            message_id=message_id,
+            model=settings.dashscope_rerank_model,
+            cost_ms=round((time.perf_counter() - rerank_start_time) * 1000),
+            detail={"candidate_count": len(rerank_documents), "result_count": len(reranked)},
+            commit=False,
+        )
         reranked_items = [
             (
                 result,
@@ -225,6 +276,10 @@ def search_active_document_chunks(
     top_k: int,
     use_reranker: bool = False,
     rerank_top_n: int | None = None,
+    trace_id: str | None = None,
+    task_id: str | None = None,
+    session_id: str | None = None,
+    message_id: str | None = None,
 ) -> tuple[str, int, str, list[MilvusChunkSearchItem]]:
     """线上入口只检索当前 active 版本，不能由普通 RAG 请求指定候选版本。"""
     document = db.scalar(
@@ -249,6 +304,10 @@ def search_active_document_chunks(
         top_k=top_k,
         use_reranker=use_reranker,
         rerank_top_n=rerank_top_n,
+        trace_id=trace_id,
+        task_id=task_id,
+        session_id=session_id,
+        message_id=message_id,
     )
 
 
@@ -261,6 +320,10 @@ def search_document_version_chunks_for_validation(
     top_k: int,
     use_reranker: bool = False,
     rerank_top_n: int | None = None,
+    trace_id: str | None = None,
+    task_id: str | None = None,
+    session_id: str | None = None,
+    message_id: str | None = None,
 ) -> tuple[str, int, str, list[MilvusChunkSearchItem]]:
     """仅供发布前验证：允许检索 indexed/active 版本，但绝不改动线上 active 指针。"""
     version = db.scalar(
@@ -281,4 +344,8 @@ def search_document_version_chunks_for_validation(
         top_k=top_k,
         use_reranker=use_reranker,
         rerank_top_n=rerank_top_n,
+        trace_id=trace_id,
+        task_id=task_id,
+        session_id=session_id,
+        message_id=message_id,
     )

@@ -150,7 +150,14 @@ class AiCallLogItem(BaseModel):
     trace_id: str | None = None
     session_id: str | None = None
     message_id: str | None = None
+    task_id: str | None = None
+    run_id: str | None = None
     call_type: str
+    stage: str | None = None
+    prompt_id: str | None = None
+    prompt_name: str | None = None
+    prompt_version: str | None = None
+    prompt_template_hash: str | None = None
     model: str | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
@@ -159,6 +166,7 @@ class AiCallLogItem(BaseModel):
     status: str
     error_type: str | None = None
     error_message: str | None = None
+    detail: dict | None = None
     created_at: str
 
 
@@ -167,6 +175,44 @@ class AiCallLogPageResponse(BaseModel):
     page: int
     page_size: int
     items: list[AiCallLogItem]
+
+
+class AiTraceTaskItem(BaseModel):
+    task_id: str
+    trace_id: str | None = None
+    session_id: str
+    message_id: str | None = None
+    task_type: str
+    status: str
+    total_tokens: int | None = None
+    cost_ms: int | None = None
+    retry_count: int
+    error_type: str | None = None
+    error_message: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class AiTraceObservabilityResponse(BaseModel):
+    trace_id: str
+    call_logs: list[AiCallLogItem]
+    tasks: list[AiTraceTaskItem]
+    # 保留旧字段，值等于 event_total_*；旧调用方不会因响应字段变更而中断。
+    total_tokens: int
+    total_cost_ms: int
+    error_count: int
+    blocked_count: int
+    event_total_tokens: int = Field(..., description="所有阶段事件 Token 的累加值，可能包含父子摘要重复计数")
+    event_total_cost_ms: int = Field(..., description="所有阶段事件耗时的累加值，不能当作端到端耗时")
+    end_to_end_total_tokens: int | None = Field(None, description="根执行单元的实际总 Token；缺少根摘要时为 null")
+    end_to_end_cost_ms: int | None = Field(None, description="根执行单元的实际总耗时；缺少根摘要时为 null")
+    end_to_end_metric_source: Literal[
+        "async_task", "agent_loop_summary", "rag_request_summary", "unavailable"
+    ] = Field(
+        ..., description="端到端指标的来源"
+    )
+    safety_interception_count: int = Field(..., description="因工具安全策略被 blocked 或 require_confirm 的次数")
+    guardrail_stop_count: int = Field(..., description="因重复工具调用等通用护栏停止的次数")
 
 
 class AiFailureSampleItem(BaseModel):
@@ -485,6 +531,11 @@ class ToolCallingResponse(BaseModel):
 class AgentLoopRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=1000, description="用户问题")
     max_steps: int = Field(3, ge=1, le=5, description="Agent 最大循环步数，防止无限循环和成本失控")
+
+
+class AsyncAgentLoopTaskRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=1000, description="用户问题")
+    max_steps: int = Field(3, ge=1, le=5, description="Agent 最大循环步数")
 
 
 class AgentLoopStepItem(BaseModel):

@@ -1015,6 +1015,14 @@ class ChatSessionSummary(Base):
 
 class AiCallLog(Base):
     __tablename__ = "ai_call_log"
+    __table_args__ = (
+        # Day26 的排查入口以 trace/task/run 为主，使用短索引名避免 MySQL 64 字符限制。
+        Index("ix_acl_task", "task_id"),
+        Index("ix_acl_run", "run_id"),
+        Index("ix_acl_stage", "stage"),
+        Index("ix_acl_prompt_name", "prompt_name"),
+        Index("ix_acl_prompt_version", "prompt_version"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     # 调用日志业务 ID，使用雪花 ID，适合后续跨服务追踪和对外查询。
@@ -1025,8 +1033,32 @@ class AiCallLog(Base):
     session_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     # 本次调用关联的 assistant 消息 ID，便于从日志定位到最终展示给用户的回答。
     message_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    # 异步任务 ID；同步请求为空，便于从任务反查具体 AI 阶段。
+    task_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, comment="关联 ai_async_task 的业务任务 ID"
+    )
+    # 评测运行 ID；普通在线请求为空，便于把 Harness 汇总日志关联到运行报告。
+    run_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, comment="关联评测或编排运行的业务 ID"
+    )
     # 调用来源，例如 session_chat、session_stream_chat、summary、title。
     call_type: Mapped[str] = mapped_column(String(64), index=True)
+    # 同一来源内的可观测阶段，例如 agent_model_decision、rag_rerank、rag_answer_generation。
+    stage: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, comment="调用来源内的可观测阶段名称"
+    )
+    prompt_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, comment="Prompt Registry 业务 ID；代码托管 Prompt 为空"
+    )
+    prompt_name: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, comment="本次模型调用使用的 Prompt 名称"
+    )
+    prompt_version: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, comment="本次模型调用实际使用的 Prompt 版本"
+    )
+    prompt_template_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, comment="Prompt 稳定模板 SHA-256，不包含业务输入"
+    )
     model: Mapped[str | None] = mapped_column(String(64), nullable=True)
     prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -1036,6 +1068,10 @@ class AiCallLog(Base):
     status: Mapped[str] = mapped_column(String(32), default="success")
     error_type: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 仅记录计数、状态、参数名等脱敏事实，不能保存用户原文、模型完整回答或工具参数值。
+    detail_json: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="可观测事件脱敏详情 JSON"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
@@ -1164,6 +1200,9 @@ class AiPromptVersion(Base):
     """AI Prompt 版本表，用于保存每个业务场景下的 prompt 内容和模型参数。"""
 
     __tablename__ = "ai_prompt_version"
+    __table_args__ = (
+        UniqueConstraint("prompt_name", "prompt_version", name="uk_aipv_name_version"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     prompt_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)

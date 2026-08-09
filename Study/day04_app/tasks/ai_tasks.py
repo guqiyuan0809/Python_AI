@@ -17,15 +17,27 @@ from day04_app.services.async_task_service import (
     mark_task_success,
     prepare_session_rag_task_retry,
     prepare_contextual_index_task_retry,
+    prepare_agent_loop_task_retry,
     prepare_agent_loop_eval_task_retry,
     prepare_work_order_eval_task_retry,
     prepare_work_order_analysis_task_retry,
     prepare_task_retry,
 )
 from day04_app.services.call_log_service import create_call_log
-from day04_app.services.chat_service import analyze_work_order_structured, safe_chat_with_messages
+from day04_app.services.chat_service import (
+    analyze_work_order_structured_with_runtime_prompt,
+    get_active_work_order_analysis_repair_prompt,
+    get_work_order_analysis_prompt_identity,
+    get_work_order_analysis_repair_prompt_identity,
+    safe_chat_with_messages,
+)
+from day04_app.services.eval_master_service import get_active_prompt_version_for_runtime
 from day04_app.services.outbox_dispatcher import dispatch_outbox_event
-from day04_app.services.rag_context_service import generate_rag_answer
+from day04_app.services.rag_context_service import (
+    generate_rag_answer,
+    get_active_rag_answer_prompt,
+    get_rag_answer_prompt_identity,
+)
 from day04_app.services.session_rag_service import (
     add_rag_answer_reference_records,
     prepare_session_rag_context,
@@ -42,12 +54,107 @@ from day04_app.services.structured_result_service import create_structured_resul
 from day04_app.services.eval_result_service import save_eval_report
 from day04_app.services.agent_loop_eval_result_service import save_agent_eval_report
 from day04_app.services.agent_loop_eval_runner import run_agent_loop_eval
+from day04_app.services.agent_loop_service import run_agent_loop
 from day04_app.services.work_order_eval_runner import run_work_order_eval
 from day04_app.services.knowledge_contextualization_service import build_contextual_vector_index
 from settings import settings
 
 
 logger = logging.getLogger("day04_app.worker")
+
+
+@celery_app.task(name="day04_app.tasks.ai_tasks.execute_agent_loop_task")
+def execute_agent_loop_task(
+    task_id: str,
+    trace_id: str | None,
+    message: str,
+    max_steps: int,
+) -> dict:
+    """消费 Outbox 事件后执行一条在线 Agent Loop 请求。"""
+    db = SessionLocal()
+    start_time: float | None = None
+    try:
+        task = claim_pending_task_for_execution(db, task_id)
+        if task is None:
+            return {"task_id": task_id, "status": "ignored"}
+
+        start_time = time.perf_counter()
+        response = run_agent_loop(
+            db,
+            message=message,
+            max_steps=max_steps,
+            trace_id=trace_id,
+            task_id=task_id,
+        )
+        completed_task = mark_task_success(
+            db,
+            task_id=task_id,
+            result_text=response.answer,
+            prompt_tokens=response.prompt_tokens,
+            completion_tokens=response.completion_tokens,
+            total_tokens=response.total_tokens,
+            cost_ms=response.cost_ms,
+        )
+        if completed_task is None:
+            return {"task_id": task_id, "status": "ignored"}
+        create_call_log(
+            db,
+            call_type="async_agent_loop",
+            trace_id=trace_id,
+            task_id=task_id,
+            stage="agent_task_summary",
+            model=response.model,
+            prompt_tokens=response.prompt_tokens,
+            completion_tokens=response.completion_tokens,
+            total_tokens=response.total_tokens,
+            cost_ms=response.cost_ms,
+            status="success",
+            detail={
+                "agent_status": response.status,
+                "step_count": len(response.steps),
+            },
+        )
+        return {"task_id": task_id, "status": "success"}
+    except Exception as exc:
+        cost_ms = round((time.perf_counter() - start_time) * 1000) if start_time else None
+        error_message = f"Agent Loop 异步任务执行异常：{type(exc).__name__}"
+        logger.exception("task_id=%s %s", task_id, error_message)
+        create_call_log(
+            db,
+            call_type="async_agent_loop",
+            trace_id=trace_id,
+            task_id=task_id,
+            stage="agent_task_summary",
+            model=None,
+            cost_ms=cost_ms,
+            status="error",
+            error_type=ERROR_TYPE_WORKER_EXECUTION_ERROR,
+            error_message=error_message,
+        )
+        failed_task = mark_task_error(
+            db,
+            task_id,
+            error_message,
+            cost_ms,
+            error_type=ERROR_TYPE_WORKER_EXECUTION_ERROR,
+        )
+        if failed_task and failed_task.retry_count < failed_task.max_retries:
+            delay_seconds = min(300, 5 * (2 ** failed_task.retry_count))
+            retry_task, retry_event = prepare_agent_loop_task_retry(
+                db,
+                task_id=task_id,
+                max_steps=max_steps,
+                delay_seconds=delay_seconds,
+            )
+            dispatch_outbox_event(db, retry_event.event_id)
+            return {
+                "task_id": retry_task.task_id,
+                "status": "retry_scheduled",
+                "retry_count": retry_task.retry_count,
+            }
+        return {"task_id": task_id, "status": "error"}
+    finally:
+        db.close()
 
 
 @celery_app.task(name="day04_app.tasks.ai_tasks.execute_session_rag_task")
@@ -95,10 +202,20 @@ def execute_session_rag_task(
             use_reranker=use_reranker,
             rerank_top_n=rerank_top_n,
             score_threshold=score_threshold,
+            trace_id=trace_id,
+            task_id=task_id,
+            session_id=session_id,
+            message_id=assistant_message_id,
+        )
+        rag_prompt = (
+            get_active_rag_answer_prompt(db)
+            if retrieval_context.context_result.references
+            else None
         )
         generation = generate_rag_answer(
             question=message,
             context_result=retrieval_context.context_result,
+            prompt=rag_prompt,
         )
         cost_ms = round((time.perf_counter() - start_time) * 1000)
 
@@ -129,21 +246,37 @@ def execute_session_rag_task(
             assistant_message_id=assistant_message_id,
             references=generation.references,
         )
-        if generation.model:
-            create_call_log(
-                db,
-                call_type="async_session_rag_knowledge_answer",
-                trace_id=trace_id,
-                session_id=session_id,
-                message_id=assistant_message_id,
-                model=generation.model,
-                prompt_tokens=generation.prompt_tokens,
-                completion_tokens=generation.completion_tokens,
-                total_tokens=generation.total_tokens,
-                cost_ms=cost_ms,
-                status="success",
-                commit=False,
-            )
+        create_call_log(
+            db,
+            call_type="async_session_rag",
+            stage="rag_answer_generation",
+            trace_id=trace_id,
+            task_id=task_id,
+            session_id=session_id,
+            message_id=assistant_message_id,
+            model=generation.model,
+            prompt_tokens=generation.prompt_tokens,
+            completion_tokens=generation.completion_tokens,
+            total_tokens=generation.total_tokens,
+            cost_ms=cost_ms,
+            status="success",
+            **(
+                generation.prompt_identity.as_call_log_fields()
+                if generation.prompt_identity
+                else {}
+            ),
+            detail={
+                "used_reference_count": len(generation.references),
+                "model_called": generation.model is not None,
+                "prompt_source": (
+                    generation.prompt_identity.prompt_source
+                    if generation.prompt_identity
+                    else "none"
+                ),
+                "rejected_by_score_threshold": retrieval_context.context_result.rejected_by_score_threshold,
+            },
+            commit=False,
+        )
         db.commit()
 
         if should_refresh_summary_for_session(db, session_id):
@@ -167,15 +300,23 @@ def execute_session_rag_task(
             )
         create_call_log(
             db,
-            call_type="async_session_rag_knowledge_answer",
+            call_type="async_session_rag",
+            stage="rag_answer_generation",
             trace_id=trace_id,
+            task_id=task_id,
             session_id=session_id,
             message_id=assistant_message_id,
-            model=settings.dashscope_model,
+            model=(rag_prompt.model or settings.dashscope_model) if "rag_prompt" in locals() and rag_prompt else settings.dashscope_model,
             cost_ms=cost_ms,
             status="error",
             error_type=getattr(exc, "error_type", ERROR_TYPE_WORKER_EXECUTION_ERROR),
             error_message=error_message,
+            **(
+                get_rag_answer_prompt_identity(rag_prompt).as_call_log_fields()
+                if "rag_prompt" in locals() and rag_prompt
+                else {}
+            ),
+            detail={"prompt_source": "database"} if "rag_prompt" in locals() and rag_prompt else None,
         )
         failed_task = mark_task_error(
             db,
@@ -218,15 +359,23 @@ def execute_session_rag_task(
             )
         create_call_log(
             db,
-            call_type="async_session_rag_knowledge_answer",
+            call_type="async_session_rag",
+            stage="rag_answer_generation",
             trace_id=trace_id,
+            task_id=task_id,
             session_id=session_id,
             message_id=assistant_message_id,
-            model=settings.dashscope_model,
+            model=(rag_prompt.model or settings.dashscope_model) if "rag_prompt" in locals() and rag_prompt else settings.dashscope_model,
             cost_ms=cost_ms,
             status="error",
             error_type=ERROR_TYPE_WORKER_EXECUTION_ERROR,
             error_message=error_message,
+            **(
+                get_rag_answer_prompt_identity(rag_prompt).as_call_log_fields()
+                if "rag_prompt" in locals() and rag_prompt
+                else {}
+            ),
+            detail={"prompt_source": "database"} if "rag_prompt" in locals() and rag_prompt else None,
         )
         mark_task_error(
             db,
@@ -421,7 +570,15 @@ def execute_work_order_analysis_task(
             return {"task_id": task_id, "status": "ignored"}
 
         start_time = time.perf_counter()
-        result = analyze_work_order_structured(content)
+        prompt = get_active_prompt_version_for_runtime(db, "work_order_analysis")
+        repair_prompt = get_active_work_order_analysis_repair_prompt(db)
+        prompt_identity = get_work_order_analysis_prompt_identity(prompt)
+        execution = analyze_work_order_structured_with_runtime_prompt(
+            content,
+            prompt,
+            repair_prompt,
+        )
+        result = execution.response
         cost_ms = round((time.perf_counter() - start_time) * 1000)
         result_json = result.analysis.model_dump()
 
@@ -464,16 +621,40 @@ def execute_work_order_analysis_task(
         create_call_log(
             db,
             call_type="async_work_order_analysis",
+            stage="prompt_model_generation",
             trace_id=trace_id,
+            task_id=task_id,
             session_id=session_id,
             message_id=assistant_message_id,
-            model=settings.dashscope_model,
-            prompt_tokens=result.prompt_tokens,
-            completion_tokens=result.completion_tokens,
-            total_tokens=result.total_tokens,
-            cost_ms=cost_ms,
+            model=prompt.model or settings.dashscope_model,
+            prompt_tokens=execution.initial_usage.prompt_tokens,
+            completion_tokens=execution.initial_usage.completion_tokens,
+            total_tokens=execution.initial_usage.total_tokens,
+            cost_ms=execution.initial_usage.cost_ms,
             status="success",
+            **prompt_identity.as_call_log_fields(),
+            detail={"prompt_source": prompt_identity.prompt_source, "repair_count": result.repair_count},
         )
+        if execution.repair_usage:
+            create_call_log(
+                db,
+                call_type="async_work_order_analysis",
+                stage="prompt_output_repair",
+                trace_id=trace_id,
+                task_id=task_id,
+                session_id=session_id,
+                message_id=assistant_message_id,
+                model=repair_prompt.model or settings.dashscope_model,
+                prompt_tokens=execution.repair_usage.prompt_tokens,
+                completion_tokens=execution.repair_usage.completion_tokens,
+                total_tokens=execution.repair_usage.total_tokens,
+                cost_ms=execution.repair_usage.cost_ms,
+                status="success",
+                **get_work_order_analysis_repair_prompt_identity(
+                    repair_prompt
+                ).as_call_log_fields(),
+                detail={"prompt_source": "database", "repair": True},
+            )
         return {"task_id": task_id, "status": "success", "result_id": structured_result.result_id}
     except ModelCallException as exc:
         cost_ms = round((time.perf_counter() - start_time) * 1000) if start_time else None
@@ -489,7 +670,9 @@ def execute_work_order_analysis_task(
         create_call_log(
             db,
             call_type="async_work_order_analysis",
+            stage="prompt_model_generation",
             trace_id=trace_id,
+            task_id=task_id,
             session_id=session_id,
             message_id=assistant_message_id,
             model=settings.dashscope_model,
@@ -497,6 +680,12 @@ def execute_work_order_analysis_task(
             status="error",
             error_type=exc.error_type,
             error_message=error_message,
+            **(
+                get_work_order_analysis_prompt_identity(prompt).as_call_log_fields()
+                if "prompt" in locals()
+                else {}
+            ),
+            detail={"prompt_source": "database"} if "prompt" in locals() else None,
         )
         failed_task = mark_task_error(db, task_id, error_message, cost_ms, error_type=exc.error_type)
         if failed_task and failed_task.retry_count < failed_task.max_retries:
@@ -529,7 +718,9 @@ def execute_work_order_analysis_task(
         create_call_log(
             db,
             call_type="async_work_order_analysis",
+            stage="prompt_model_generation",
             trace_id=trace_id,
+            task_id=task_id,
             session_id=session_id,
             message_id=assistant_message_id,
             model=settings.dashscope_model,
@@ -537,6 +728,12 @@ def execute_work_order_analysis_task(
             status="error",
             error_type=ERROR_TYPE_WORKER_EXECUTION_ERROR,
             error_message=error_message,
+            **(
+                get_work_order_analysis_prompt_identity(prompt).as_call_log_fields()
+                if "prompt" in locals()
+                else {}
+            ),
+            detail={"prompt_source": "database"} if "prompt" in locals() else None,
         )
         mark_task_error(db, task_id, error_message, cost_ms, error_type=ERROR_TYPE_WORKER_EXECUTION_ERROR)
         return {"task_id": task_id, "status": "error"}
@@ -798,6 +995,8 @@ def execute_agent_loop_eval_task(
             agent_version=agent_version,
             dataset_version=dataset_version,
             sample_limit=sample_limit,
+            trace_id=trace_id,
+            task_id=task_id,
         )
         save_agent_eval_report(db, report)
         cost_ms = round((time.perf_counter() - start_time) * 1000)
@@ -824,10 +1023,18 @@ def execute_agent_loop_eval_task(
             db,
             call_type="async_agent_loop_eval",
             trace_id=trace_id,
+            task_id=task_id,
+            run_id=report["run_id"],
+            stage="agent_eval_summary",
             model=None,
             total_tokens=total_tokens,
             cost_ms=cost_ms,
             status="success",
+            detail={
+                "sample_count": report["metrics"]["sample_count"],
+                "full_pass_rate": report["metrics"]["full_pass_rate"],
+                "safety_case_pass_rate": report["metrics"]["safety_case_pass_rate"],
+            },
         )
         return {"task_id": task_id, "status": "success", "run_id": report["run_id"]}
     except Exception as exc:
@@ -838,6 +1045,8 @@ def execute_agent_loop_eval_task(
             db,
             call_type="async_agent_loop_eval",
             trace_id=trace_id,
+            task_id=task_id,
+            stage="agent_eval_summary",
             model=None,
             cost_ms=cost_ms,
             status="error",

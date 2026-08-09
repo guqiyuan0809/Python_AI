@@ -21,9 +21,10 @@ from day04_app.models import AiEvalSample
 from day04_app.schemas.chat_schema import AgentLoopResponse
 from day04_app.services.agent_loop_service import (
     AGENT_DECISION_POLICY_VERSION,
-    AGENT_LOOP_SYSTEM_PROMPT,
+    get_active_agent_decision_prompt,
     run_agent_loop,
 )
+from day04_app.services.prompt_observability_service import build_registry_prompt_identity
 from day04_app.services.tool_calling_service import list_available_tools
 
 
@@ -44,9 +45,18 @@ def _count_accuracy(rows: list[dict[str, Any]], matched_field: str, expected_fie
     return round(sum(row[matched_field] for row in rows) / expected_count, 4)
 
 
-def _build_agent_snapshot() -> tuple[dict[str, Any], str]:
+def _build_agent_snapshot(prompt) -> tuple[dict[str, Any], str]:
+    prompt_identity = build_registry_prompt_identity(prompt)
     snapshot = {
-        "system_prompt": AGENT_LOOP_SYSTEM_PROMPT,
+        "prompt_id": prompt_identity.prompt_id,
+        "prompt_name": prompt_identity.prompt_name,
+        "prompt_version": prompt_identity.prompt_version,
+        "prompt_template_hash": prompt_identity.prompt_template_hash,
+        "system_prompt": prompt.system_prompt,
+        "user_prompt_template": prompt.user_prompt_template,
+        "model": prompt.model,
+        "temperature": prompt.temperature,
+        "max_tokens": prompt.max_tokens,
         "decision_policy_version": AGENT_DECISION_POLICY_VERSION,
         "available_tools": [tool.model_dump() for tool in list_available_tools()],
     }
@@ -189,18 +199,30 @@ def _evaluate_response(
 def _run_one_sample(
     sample: AiEvalSample,
     *,
+    run_id: str,
+    trace_id: str | None,
+    task_id: str | None,
     db_factory: Callable[[], Session],
     agent_runner: Callable[..., AgentLoopResponse],
+    decision_prompt,
 ) -> dict[str, Any]:
     expected = json.loads(sample.expected_json)
     db = db_factory()
     try:
-        response = agent_runner(
-            db,
-            message=sample.input_text,
-            max_steps=int(expected.get("max_steps", 3)),
-            trace_id=f"agent_eval_{sample.sample_id}",
-        )
+        runner_arguments = {
+            "message": sample.input_text,
+            "max_steps": int(expected.get("max_steps", 3)),
+            "trace_id": trace_id or f"agent_eval_{sample.sample_id}",
+        }
+        if agent_runner is run_agent_loop:
+            # 替身 Agent 只需维持 Day25 既有四参数契约；真实 Agent 才写 Day26 分步日志。
+            runner_arguments.update(
+                task_id=task_id,
+                run_id=run_id,
+                sample_id=sample.sample_id,
+                decision_prompt=decision_prompt,
+            )
+        response = agent_runner(db, **runner_arguments)
         return _evaluate_response(
             sample_id=sample.sample_id,
             sample_type=sample.sample_type,
@@ -225,6 +247,8 @@ def run_agent_loop_eval(
     agent_version: str,
     dataset_version: str,
     sample_limit: int | None = None,
+    trace_id: str | None = None,
+    task_id: str | None = None,
     db_factory: Callable[[], Session] = SessionLocal,
     agent_runner: Callable[..., AgentLoopResponse] = run_agent_loop,
 ) -> dict[str, Any]:
@@ -235,12 +259,22 @@ def run_agent_loop_eval(
     db = db_factory()
     try:
         samples = _load_samples(db, dataset_version, sample_limit)
+        decision_prompt = get_active_agent_decision_prompt(db)
     finally:
         db.close()
 
-    agent_snapshot, agent_snapshot_hash = _build_agent_snapshot()
+    agent_snapshot, agent_snapshot_hash = _build_agent_snapshot(decision_prompt)
+    run_id = f"agent_eval_{datetime.now(CHINA_TZ).strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
     rows = [
-        _run_one_sample(sample, db_factory=db_factory, agent_runner=agent_runner)
+        _run_one_sample(
+            sample,
+            run_id=run_id,
+            trace_id=trace_id,
+            task_id=task_id,
+            db_factory=db_factory,
+            agent_runner=agent_runner,
+            decision_prompt=decision_prompt,
+        )
         for sample in samples
     ]
     safety_rows = [row for row in rows if row["sample_type"] == "safety"]
@@ -267,7 +301,7 @@ def run_agent_loop_eval(
         "failed_sample_ids": [row["sample_id"] for row in rows if not row["case_pass"]],
     }
     return {
-        "run_id": f"agent_eval_{datetime.now(CHINA_TZ).strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}",
+        "run_id": run_id,
         "run_at": datetime.now(CHINA_TZ).isoformat(),
         "agent_name": AGENT_NAME,
         "agent_version": agent_version,

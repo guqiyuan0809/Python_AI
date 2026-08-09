@@ -14,12 +14,16 @@ from uuid import uuid4
 
 from day04_app.common.exceptions import ModelCallException
 from day04_app.database import SessionLocal
-from day04_app.services.chat_service import analyze_work_order_structured_with_prompt
+from day04_app.services.chat_service import (
+    analyze_work_order_structured_with_prompt,
+    get_active_work_order_analysis_repair_prompt,
+)
 from day04_app.services.eval_master_service import (
     EvalSampleDTO,
     get_prompt_version_for_eval,
     list_active_eval_samples,
 )
+from day04_app.services.prompt_observability_service import build_registry_prompt_identity
 
 
 CHINA_TZ = timezone(timedelta(hours=8))
@@ -42,7 +46,8 @@ def load_eval_context(prompt_name: str, prompt_version: str, dataset_version: st
         # Harness 允许评测 draft 候选版本；线上业务调用仍应只选 active 版本。
         prompt = get_prompt_version_for_eval(db, prompt_name, prompt_version)
         samples = list_active_eval_samples(db, dataset_version)
-        return prompt, samples
+        repair_prompt = get_active_work_order_analysis_repair_prompt(db)
+        return prompt, samples, repair_prompt
     finally:
         db.close()
 
@@ -54,11 +59,15 @@ def run_work_order_eval(
 ) -> dict[str, Any]:
     """执行一次工单结构化分析评测，并返回完整报告。"""
     run_id = f"wo_eval_{datetime.now(CHINA_TZ).strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
-    prompt, samples = load_eval_context(prompt_name, prompt_version, dataset_version)
+    prompt, samples, repair_prompt = load_eval_context(
+        prompt_name,
+        prompt_version,
+        dataset_version,
+    )
     rows: list[dict[str, Any]] = []
 
     for sample in samples:
-        row = run_one_sample(sample, prompt)
+        row = run_one_sample(sample, prompt, repair_prompt)
         rows.append(row)
         print_json_line(row)
 
@@ -92,12 +101,20 @@ def run_work_order_eval(
             "temperature": prompt.temperature,
             "max_tokens": prompt.max_tokens,
         },
+        "repair_prompt_snapshot": {
+            **build_registry_prompt_identity(repair_prompt).__dict__,
+            "system_prompt": repair_prompt.system_prompt,
+            "user_prompt_template": repair_prompt.user_prompt_template,
+            "model": repair_prompt.model,
+            "temperature": repair_prompt.temperature,
+            "max_tokens": repair_prompt.max_tokens,
+        },
         "metrics": metrics,
         "rows": rows,
     }
 
 
-def run_one_sample(sample: EvalSampleDTO, prompt) -> dict[str, Any]:
+def run_one_sample(sample: EvalSampleDTO, prompt, repair_prompt) -> dict[str, Any]:
     start_time = time.perf_counter()
     row: dict[str, Any] = {
         "sample_id": sample.sample_id,
@@ -119,6 +136,7 @@ def run_one_sample(sample: EvalSampleDTO, prompt) -> dict[str, Any]:
             model=prompt.model,
             temperature=prompt.temperature or 0.1,
             max_tokens=prompt.max_tokens or 600,
+            repair_prompt=repair_prompt,
         )
         cost_ms = round((time.perf_counter() - start_time) * 1000)
         actual = result.analysis.model_dump()

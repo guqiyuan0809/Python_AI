@@ -458,3 +458,191 @@ D:\Pythoncode\.venv\Scripts\python.exe -B scripts\seed_agent_loop_eval_samples.p
 - 步骤序列、工具调用、observation 状态和完整通过率均从 `0.875` 提升至 `1.0`；平均 Token 下降约 `3.56%`；平均耗时上升约 `20.33%`，仍低于 Gate 允许的 `30%`。
 
 Day25 至此完成：Agent Loop 已具备固定样本、真实异步评测、轨迹断言、安全准入和版本快照。下一阶段进入 Day26：AI 结果可观测性，重点是把 Agent、RAG、模型和工具调用的链路标识、分段耗时、Token、错误与安全拦截统一查询和分析。
+
+## 2026-08-08：Day26 AI 结果可观测性（第一阶段）
+
+### 课程目标
+
+Day25 证明了 Agent 是否通过评测，但线上排查还需要回答另一个问题：一次请求为什么慢、消耗了多少 Token、在哪一步失败、是否触发了工具安全拦截。Day26 第一阶段优先复用 `ai_call_log`，不新建重复的日志表。
+
+### `ai_call_log` 可观测性扩展
+
+Alembic revision：`20260808_001`，当前数据库已迁移到 `head`。新增字段：
+
+- `task_id`：关联异步任务；
+- `run_id`：关联 Agent Harness 或其他编排运行；
+- `stage`：调用来源内的阶段，例如 `agent_model_decision`、`agent_tool_execution`、`rag_vector_search`；
+- `detail_json`：脱敏详情，只保存数量、状态、工具名、参数名、版本等排查事实，不保存用户原文、完整回答或实际参数值。
+
+新增索引：`ix_acl_task`、`ix_acl_run`、`ix_acl_stage`。历史日志字段保持兼容，旧数据的新增字段为空。
+
+### Agent 事件
+
+`run_agent_loop` 现在记录：
+
+1. `agent_model_decision`：模型决策耗时、Token、步号、动作和工具名；
+2. `agent_route_decision`：确定性高风险路由命中事实；
+3. `agent_tool_execution`：工具耗时、参数名、`observation_status` 和命中的安全规则；
+4. `agent_loop_summary`：本次 Loop 汇总耗时与 Token。
+
+Harness 运行把同一 `task_id` 和 `run_id` 传入 Agent，因而可以把评测任务、每条样本的 Agent 步骤和运行报告关联起来。
+
+### RAG 事件
+
+会话 RAG 复用同一套日志协议，记录查询 Embedding、Milvus 向量召回、Reranker、上下文组装和答案生成阶段，并保存：
+
+- active `version_id`；
+- 召回/纳入/省略的 chunk 数；
+- score threshold 是否拒答；
+- Reranker 候选数和结果数；
+- 回答实际使用的引用数量；
+- 各阶段模型、Token 和耗时。
+
+### 统一查询接口
+
+新增：
+
+```http
+GET /api/chat/observability/traces/{trace_id}
+```
+
+该接口聚合同一 `trace_id` 下的 `ai_call_log` 和 `ai_async_task`，并计算总 Token、总耗时、错误数和安全拦截数。原有：
+
+```http
+GET /api/chat/call-logs?trace_id=...
+```
+
+同时支持 `task_id`、`call_type`、`stage` 筛选。
+
+已完成零成本验证：数据库字段/索引、模块 AST 解析、FastAPI 路由导入，以及高风险关闭工单的 `agent_route_decision -> agent_tool_execution(require_confirm) -> agent_loop_summary` 事件链路均通过。下一步用 Apifox 查询真实已有 trace，再补充真实 Agent/RAG 链路的可观测结果核对。
+
+### Day26 第二阶段：在线 Agent Loop 异步任务
+
+`POST /api/chat/agent-evals/run/async` 虽然也会异步运行 Agent Loop，但它属于 Harness 批量评测：输入是 `agent_version`、`dataset_version` 和 `sample_limit`，Worker 会逐条运行样本、写入 `ai_agent_eval_run`/`ai_agent_eval_case_result`，最后生成通过率。它不是接收一条真实用户问题的线上接口。
+
+因此新增了业务接口：
+
+```text
+POST /api/chat/agent-loop/async
+-> ai_async_task(task_type=agent_loop)
+-> ai_task_outbox(event_type=agent_loop.execute)
+-> RabbitMQ / Celery Worker
+-> run_agent_loop(task_id, trace_id)
+-> ai_call_log 分阶段事件 + ai_async_task 最终结果
+```
+
+提交接口只创建任务和 Outbox 事件后立即返回 `task_id`；Worker 才真正执行 Agent。在线 Agent 当前没有聊天会话依赖，所以 `ai_async_task.session_id` 使用 `system_agent` 这个系统任务标识，不创建伪造的 `ChatSession`。该链路没有批量评测含义，因而不产生 `run_id`：线上单次执行用 `task_id` 关联任务，用 `trace_id` 关联整条请求链路。
+
+Worker 调用 `run_agent_loop` 时会把 `task_id` 传入，所以原有的 `agent_model_decision`、`agent_route_decision`、`agent_tool_execution`、`agent_loop_summary` 事件都自动关联到该异步任务；Worker 最后额外写入 `agent_task_summary`，表示任务层已经结束。失败时按既有指数退避策略重试，且从 Outbox 参数快照恢复原始 `max_steps`，避免重试时悄悄放大 Agent 循环上限和模型成本。
+
+第一次验证建议使用已完成的高风险关闭工单请求：它会走真实 HTTP、MySQL、Outbox、RabbitMQ、Celery 和可观测性链路，但确定性高风险路由会直接得到 `require_confirm`，不会调用模型，也不会真正关闭工单。预期阶段顺序为：
+
+```text
+agent_route_decision
+-> agent_tool_execution(require_confirm)
+-> agent_loop_summary
+-> agent_task_summary
+```
+
+### Day26 第三阶段：区分阶段累加与端到端指标
+
+真实异步 Agent 验证暴露了一个可观测性口径问题：`agent_loop_summary` 记录了 Loop 总耗时，`agent_task_summary` 又记录了同一 Worker 任务的总耗时。如果把所有 `ai_call_log.cost_ms` 直接求和，`17ms + 17ms` 会被错误显示为 `34ms`。这不是数据库重复写入，而是父摘要和子摘要的指标不能用同一种聚合规则。
+
+因此 trace 查询接口同时返回两组指标：
+
+- `event_total_tokens` / `event_total_cost_ms`：阶段事件的简单累加，用于看哪些阶段产生了 Token 或耗时；可能包含父子摘要的重复计数；
+- `end_to_end_total_tokens` / `end_to_end_cost_ms`：端到端根执行单元指标。异步请求优先使用 `ai_async_task` 的最终指标；同步 Agent 在没有异步任务时使用唯一的 `agent_loop_summary`；同步多阶段 RAG 暂无根摘要时返回 `null`，绝不把阶段累加伪装为端到端耗时；
+- `end_to_end_metric_source`：标识端到端指标来自 `async_task`、`agent_loop_summary`，还是暂时 `unavailable`；
+- `safety_interception_count`：工具策略返回 `blocked` 或 `require_confirm` 的次数；
+- `guardrail_stop_count`：重复工具调用等通用执行护栏的停止次数。
+
+为了兼容已写好的调用方，旧字段 `total_tokens`、`total_cost_ms` 和 `blocked_count` 保留：前两个仍等于事件累加值，最后一个等于安全拦截与通用护栏停止之和。新增字段才是后续监控面板应使用的明确口径。
+
+### Day26 第四阶段：同步 RAG 根摘要
+
+同步会话 RAG 之前已经记录了 Embedding/检索、Reranker、上下文组装和答案生成等阶段事件，但没有像异步任务一样的 `ai_async_task` 最终记录。于是 trace 聚合无法安全给出它的端到端耗时，只能返回 `end_to_end_metric_source=unavailable`。
+
+在 `answer_session_with_rag` 中新增 `rag_request_summary` 根摘要事件：从检索前开始计时，直到回答成功或错误信息落库为止，覆盖 Embedding、Milvus 召回、可选 Reranker、上下文组装和答案生成。它记录已知总 Token、实际总耗时、文档/版本、是否因分数阈值拒答、是否调用模型和实际引用数量；不记录用户原文、完整回答或 Chunk 正文。
+
+因此同一条同步 RAG trace 有两类记录：各阶段日志用于定位慢点，`rag_request_summary` 用于端到端指标。聚合接口遇到唯一 RAG 根摘要时返回：
+
+```text
+end_to_end_metric_source = rag_request_summary
+end_to_end_cost_ms = rag_request_summary.cost_ms
+```
+
+根摘要和成功回答、引用快照、答案生成事件放在同一数据库事务中提交，避免出现“回答成功但缺少端到端观测记录”。失败时也会写入错误根摘要，方便区分检索失败、模型失败和正常低分拒答。
+
+### Day26 第五阶段：Prompt 身份与版本可观测性
+
+一次 `trace_id` 可能包含多次模型调用，也可能使用多个 Prompt。企业系统不能在链路级日志上只放一个 `prompt_version`，否则后写入的版本会覆盖前一次调用，无法回答“哪一轮 Agent 决策或哪一个 RAG 生成 Prompt 出了问题”。本阶段把日志粒度明确为：**一次真实模型调用一条 `ai_call_log`，同一链路通过相同 `trace_id` 聚合**。
+
+Alembic revision `20260808_002` 已为 `ai_call_log` 增加：
+
+- `prompt_id`：数据库 Prompt Registry 的业务 ID；代码内 Prompt 没有 Registry 记录时为空；
+- `prompt_name`：稳定的业务名称，例如 `rag_answer`、`agent_decision`；
+- `prompt_version`：实际版本，例如数据库 `v2` 或代码 `code-v3`；
+- `prompt_template_hash`：System Prompt 与 User Prompt 稳定模板的 SHA-256，不包含用户原文、RAG Context、模型回答或工具参数值。
+
+完整 Prompt 正文仍由 `ai_prompt_version` 管理。线上工单分析先读取唯一 `active` 记录，再使用同一个 ORM 对象完成模型调用和日志身份构建，避免“调用用 v2、日志却在发布竞态中记成 v3”。代码托管的 RAG 与 Agent Prompt 暂时使用显式代码版本和模板哈希，`detail_json.prompt_source=code`；数据库托管 Prompt 使用 `prompt_source=database`。
+
+当前三条典型链路：
+
+```text
+RAG:
+rag_query_embedding          -> 无 Chat Prompt
+rag_context_build            -> Python 组装，无 Chat Prompt
+rag_answer_generation        -> rag_answer / code-v1
+
+Agent Loop:
+agent_model_decision(step=1) -> agent_decision / code-v3
+agent_model_decision(step=2) -> agent_decision / code-v3
+agent_route_decision          -> 确定性后端路由，无 Chat Prompt
+
+工单结构化分析:
+prompt_model_generation      -> work_order_analysis / 数据库 active 版本
+prompt_output_repair         -> work_order_analysis_repair / code-v1（仅首次输出不合法时出现）
+```
+
+`agent_decision` 的 Prompt 版本与 `agent-loop-policy-v3` 的策略版本含义不同：前者描述模型看到的指令模板，后者描述后端安全路由和执行规则。日志同时保留 Prompt 身份、`decision_policy_version` 和脱敏的 `tool_catalog_hash`，从而能区分 Prompt 回归、工具清单变化和后端策略变化。
+
+查询单条链路仍使用：
+
+```http
+GET /api/chat/observability/traces/{trace_id}
+```
+
+查询某个 Prompt 版本的线上调用可使用：
+
+```http
+GET /api/chat/call-logs?prompt_name=agent_decision&prompt_version=code-v3
+```
+
+旧日志不会被伪造补齐，新增字段保持 `null`；只有迁移后新产生的模型调用才携带真实 Prompt 身份。该设计支持按版本统计成功率、Token、耗时和错误，定位回归后通过 `prompt_id` 回查 Registry，也避免日志系统成为第二份敏感 Prompt 正文仓库。
+
+### Day26 第六阶段：代码 Prompt 迁入统一 Registry
+
+第五阶段先让代码 Prompt 具备名称、代码版本和模板哈希，解决了“日志不知道使用哪个 Prompt”的问题；但 `rag_answer/code-v1`、`agent_decision/code-v3` 和 `work_order_analysis_repair/code-v1` 仍无法通过 `prompt_id` 回查 `ai_prompt_version`，也不能复用发布与回滚流程。
+
+Alembic revision `20260809_001` 将三份现有代码模板逐字初始化为数据库 Active 版本：
+
+| prompt_id | prompt_name | prompt_version | 参数 |
+| --- | --- | --- | --- |
+| `prompt_rag_answer_v1` | `rag_answer` | `v1` | qwen-plus / 0.1 / 800 |
+| `prompt_agent_decision_v3` | `agent_decision` | `v3` | qwen-plus / 0.0 / 500 |
+| `prompt_work_order_analysis_repair_v1` | `work_order_analysis_repair` | `v1` | qwen-plus / 0.1 / 600 |
+
+同时为 `(prompt_name, prompt_version)` 增加唯一约束 `uk_aipv_name_version`，防止同一个业务 Prompt 出现两个内容不同但版本号相同的记录。MySQL 无法直接使用通用的部分唯一索引表达“每个名称只有一个 active”，因此运行时服务仍会强校验 Active 记录数量必须等于 1，发布服务则在事务锁内归档旧版本并激活候选版本。
+
+运行时不再使用代码常量作为实际模型输入：
+
+- RAG 在存在可用参考资料、确实需要调用聊天模型时读取 `rag_answer` Active 版本；正常低分拒答不会无意义读取或记录 Prompt；
+- Agent 第一次需要模型决策时读取 `agent_decision` Active 版本，并在整个 Loop 内固定同一个 ORM 快照，避免多轮执行期间并发发布造成前后轮使用不同版本；
+- 工单主分析同时固定 `work_order_analysis` 和 `work_order_analysis_repair`，只有首次输出校验失败时才实际调用修复 Prompt；
+- 三条链路都使用数据库中的 model、temperature 和 max_tokens，不再只读取模板正文却继续硬编码模型参数。
+
+代码中的默认模板继续保留，职责变为迁移初始化基线和无数据库单元测试夹具，不是线上配置来源。新日志中的 `prompt_source` 统一变为 `database`，并可通过非空 `prompt_id` 回查版本表；历史 `code-v1/code-v3` 日志仍保持原样，不能篡改成数据库版本。
+
+Prompt 模板渲染增加占位符契约：RAG 必须包含 `{context}`、`{question}`，Agent 必须包含 `{message}`、`{max_steps}`、`{tools}`、`{steps}`，修复 Prompt 必须包含 `{validation_error}`、`{raw_text}`。缺失或出现未声明占位符时运行时直接拒绝调用模型，避免错误模板静默消耗 Token。替换过程只扫描模板一次，业务输入中即使出现类似 `{question}` 的文本也不会被二次替换。
+
+Harness 也必须与运行时一致：Agent Harness 现在把数据库 Prompt ID、版本、哈希、完整模板、模型参数、工具清单和后端策略版本一起固定进运行快照，并把同一 Prompt 对象传给每条真实样本；工单 Harness 额外保存 Active 修复 Prompt 快照。这样评测报告描述的版本与实际执行的模型输入保持一致。

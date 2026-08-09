@@ -4,23 +4,23 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="5108f4fb-6914-4289-8411-3469ec54b2e8" name="更改" comment="第23天-3">
-      <change afterPath="$PROJECT_DIR$/Study/alembic/versions/20260807_001_day25_agent_loop_harness.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/day04_app/services/agent_loop_eval_gate_service.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/day04_app/services/agent_loop_eval_query_service.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/day04_app/services/agent_loop_eval_result_service.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/day04_app/services/agent_loop_eval_runner.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/evals/run_agent_loop_eval.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/scripts/seed_agent_loop_eval_samples.py" afterDir="false" />
+    <list default="true" id="5108f4fb-6914-4289-8411-3469ec54b2e8" name="更改" comment="第25">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Study/celerybeat-schedule-shm" beforeDir="false" afterPath="$PROJECT_DIR$/Study/celerybeat-schedule-shm" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Study/celerybeat-schedule-wal" beforeDir="false" afterPath="$PROJECT_DIR$/Study/celerybeat-schedule-wal" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Study/day04_app/models.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/models.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Study/day04_app/routers/chat_router.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/routers/chat_router.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/routers/knowledge_router.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/routers/knowledge_router.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Study/day04_app/schemas/chat_schema.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/schemas/chat_schema.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/agent_loop_eval_runner.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/agent_loop_eval_runner.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Study/day04_app/services/agent_loop_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/agent_loop_service.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Study/day04_app/services/async_task_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/async_task_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/call_log_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/call_log_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/chat_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/chat_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/knowledge_milvus_search_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/knowledge_milvus_search_service.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Study/day04_app/services/outbox_dispatcher.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/outbox_dispatcher.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/rag_context_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/rag_context_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/session_rag_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/session_rag_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/work_order_eval_runner.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/work_order_eval_runner.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Study/day04_app/tasks/ai_tasks.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/tasks/ai_tasks.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Study/learning_diary.md" beforeDir="false" afterPath="$PROJECT_DIR$/Study/learning_diary.md" afterDir="false" />
     </list>
@@ -30,7 +30,7 @@
     <option name="LAST_RESOLUTION" value="IGNORE" />
   </component>
   <component name="EmbeddingIndexingInfo">
-    <option name="cachedIndexableFilesCount" value="267" />
+    <option name="cachedIndexableFilesCount" value="270" />
   </component>
   <component name="FileTemplateManagerImpl">
     <option name="RECENT_TEMPLATES">
@@ -330,7 +330,8 @@
       <workItem from="1786004850259" duration="3492000" />
       <workItem from="1786059885883" duration="21758000" />
       <workItem from="1786106689735" duration="605000" />
-      <workItem from="1786148171986" duration="6511000" />
+      <workItem from="1786148171986" duration="13228000" />
+      <workItem from="1786235342740" duration="2682000" />
     </task>
     <task id="LOCAL-00001" summary="111">
       <option name="closed" value="true" />
@@ -540,7 +541,15 @@
       <option name="project" value="LOCAL" />
       <updated>1786099078384</updated>
     </task>
-    <option name="localTasksCounter" value="27" />
+    <task id="LOCAL-00027" summary="第25">
+      <option name="closed" value="true" />
+      <created>1786159414992</created>
+      <option name="number" value="00027" />
+      <option name="presentableId" value="LOCAL-00027" />
+      <option name="project" value="LOCAL" />
+      <updated>1786159414992</updated>
+    </task>
+    <option name="localTasksCounter" value="28" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -591,13 +600,14 @@
     <MESSAGE value="第23天-1" />
     <MESSAGE value="第23天-2" />
     <MESSAGE value="第23天-3" />
-    <option name="LAST_COMMIT_MESSAGE" value="第23天-3" />
+    <MESSAGE value="第25" />
+    <option name="LAST_COMMIT_MESSAGE" value="第25" />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/Pythoncode$DemoClass.coverage" NAME="DemoClass 覆盖结果" MODIFIED="1779969206789" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/Pythoncode$day02.coverage" NAME="day02 覆盖结果" MODIFIED="1780649030673" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/Study" />
     <SUITE FILE_PATH="coverage/Pythoncode$Celery_day04_app_celery_app.coverage" NAME="Celery day04_app.celery_app 覆盖结果" MODIFIED="1785724327924" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="" />
-    <SUITE FILE_PATH="coverage/Pythoncode$run_day04.coverage" NAME="run_day04 覆盖结果" MODIFIED="1786157933763" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/Study" />
+    <SUITE FILE_PATH="coverage/Pythoncode$run_day04.coverage" NAME="run_day04 覆盖结果" MODIFIED="1786239407959" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/Study" />
     <SUITE FILE_PATH="coverage/Pythoncode$day01.coverage" NAME="day01 覆盖结果" MODIFIED="1780408580009" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/Study" />
     <SUITE FILE_PATH="coverage/Pythoncode$ljh1.coverage" NAME="ljh1 覆盖结果" MODIFIED="1780045234815" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/Pythoncode$day04_fastapi.coverage" NAME="day04_fastapi 覆盖结果" MODIFIED="1780748592809" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/Study" />

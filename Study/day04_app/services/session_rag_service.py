@@ -23,6 +23,8 @@ from day04_app.services.rag_context_service import (
     RagContextBuildResult,
     build_rag_context,
     generate_rag_answer,
+    get_active_rag_answer_prompt,
+    get_rag_answer_prompt_identity,
 )
 from day04_app.services.session_service import (
     add_message,
@@ -122,25 +124,120 @@ def prepare_session_rag_context(
     use_reranker: bool = False,
     rerank_top_n: int = 20,
     score_threshold: float | None = None,
+    trace_id: str | None = None,
+    task_id: str | None = None,
+    session_id: str | None = None,
+    message_id: str | None = None,
 ) -> SessionRagRetrievalContext:
     """执行 RAG 检索与资料组装，不写会话消息，便于同步与异步入口共用。"""
-    _, _, active_version_id, items = search_active_document_chunks(
+    retrieval_start_time = time.perf_counter()
+    embedding_model, _, active_version_id, items = search_active_document_chunks(
         db,
         document_id=document_id,
         question=message,
         top_k=retrieval_top_k,
         use_reranker=use_reranker,
         rerank_top_n=rerank_top_n,
+        trace_id=trace_id,
+        task_id=task_id,
+        session_id=session_id,
+        message_id=message_id,
     )
+    retrieval_cost_ms = round((time.perf_counter() - retrieval_start_time) * 1000)
+    create_call_log(
+        db,
+        call_type="session_rag",
+        stage="rag_retrieval",
+        trace_id=trace_id,
+        task_id=task_id,
+        session_id=session_id,
+        message_id=message_id,
+        model=embedding_model,
+        cost_ms=retrieval_cost_ms,
+        detail={
+            "document_id": document_id,
+            "version_id": active_version_id,
+            "retrieved_chunk_count": len(items),
+            "retrieval_top_k": retrieval_top_k,
+            "use_reranker": use_reranker,
+            "rerank_top_n": rerank_top_n if use_reranker else None,
+        },
+        commit=False,
+    )
+
+    context_start_time = time.perf_counter()
     context_result = build_rag_context(
         items,
         max_context_characters=max_context_characters,
         score_threshold=score_threshold,
     )
+    create_call_log(
+        db,
+        call_type="session_rag",
+        stage="rag_context_build",
+        trace_id=trace_id,
+        task_id=task_id,
+        session_id=session_id,
+        message_id=message_id,
+        cost_ms=round((time.perf_counter() - context_start_time) * 1000),
+        detail={
+            "version_id": active_version_id,
+            "included_reference_count": len(context_result.references),
+            "omitted_chunk_count": context_result.omitted_chunk_count,
+            "score_threshold": context_result.score_threshold,
+            "rejected_by_score_threshold": context_result.rejected_by_score_threshold,
+        },
+        commit=False,
+    )
     return SessionRagRetrievalContext(
         active_version_id=active_version_id,
         items=items,
         context_result=context_result,
+    )
+
+
+def _create_rag_request_summary(
+    db: Session,
+    *,
+    trace_id: str | None,
+    session_id: str,
+    assistant_message_id: str,
+    document_id: str,
+    active_version_id: str | None,
+    model: str | None,
+    total_tokens: int | None,
+    cost_ms: int,
+    status: str,
+    rejected_by_score_threshold: bool | None = None,
+    used_reference_count: int | None = None,
+    error_type: str | None = None,
+    error_message: str | None = None,
+    commit: bool = True,
+) -> None:
+    """写入同步 RAG 的根摘要，端到端指标不能由阶段事件相加得到。"""
+    create_call_log(
+        db,
+        call_type="session_rag",
+        stage="rag_request_summary",
+        trace_id=trace_id,
+        session_id=session_id,
+        message_id=assistant_message_id,
+        model=model,
+        total_tokens=total_tokens,
+        cost_ms=cost_ms,
+        status=status,
+        error_type=error_type,
+        error_message=error_message,
+        detail={
+            "summary": True,
+            "summary_type": "rag_request",
+            "document_id": document_id,
+            "version_id": active_version_id,
+            "model_called": model is not None,
+            "rejected_by_score_threshold": rejected_by_score_threshold,
+            "used_reference_count": used_reference_count,
+        },
+        commit=commit,
     )
 
 
@@ -175,6 +272,8 @@ def answer_session_with_rag(
         status="pending",
     )
 
+    # 根摘要从检索前开始计时，覆盖 Embedding、召回、精排、上下文和答案生成。
+    rag_start_time = time.perf_counter()
     try:
         retrieval_context = prepare_session_rag_context(
             db,
@@ -185,6 +284,9 @@ def answer_session_with_rag(
             use_reranker=use_reranker,
             rerank_top_n=rerank_top_n,
             score_threshold=score_threshold,
+            trace_id=trace_id,
+            session_id=session_id,
+            message_id=assistant_message.message_id,
         )
     except (BusinessException, ModelCallException) as exc:
         update_message(
@@ -194,15 +296,36 @@ def answer_session_with_rag(
             status="error",
             error_message=exc.message,
         )
+        _create_rag_request_summary(
+            db,
+            trace_id=trace_id,
+            session_id=session_id,
+            assistant_message_id=assistant_message.message_id,
+            document_id=document_id,
+            active_version_id=None,
+            model=None,
+            total_tokens=None,
+            cost_ms=round((time.perf_counter() - rag_start_time) * 1000),
+            status="error",
+            error_type=getattr(exc, "error_type", type(exc).__name__),
+            error_message=exc.message,
+        )
         raise
 
-    start_time = time.perf_counter()
+    generation_start_time = time.perf_counter()
+    rag_prompt = (
+        get_active_rag_answer_prompt(db)
+        if retrieval_context.context_result.references
+        else None
+    )
     try:
         generation = generate_rag_answer(
             question=message,
             context_result=retrieval_context.context_result,
+            prompt=rag_prompt,
         )
-        cost_ms = round((time.perf_counter() - start_time) * 1000)
+        generation_cost_ms = round((time.perf_counter() - generation_start_time) * 1000)
+        rag_total_cost_ms = round((time.perf_counter() - rag_start_time) * 1000)
 
         # 回答状态、实际引用和调用日志同一次事务提交，不能出现成功回答却没有来源审计。
         persistent_assistant = get_message(db, assistant_message.message_id)
@@ -218,27 +341,57 @@ def answer_session_with_rag(
             assistant_message_id=assistant_message.message_id,
             references=generation.references,
         )
-        if generation.model:
-            create_call_log(
-                db,
-                call_type="session_rag_knowledge_answer",
-                trace_id=trace_id,
-                session_id=session_id,
-                message_id=assistant_message.message_id,
-                model=generation.model,
-                prompt_tokens=generation.prompt_tokens,
-                completion_tokens=generation.completion_tokens,
-                total_tokens=generation.total_tokens,
-                cost_ms=cost_ms,
-                status="success",
-                commit=False,
-            )
+        create_call_log(
+            db,
+            call_type="session_rag",
+            stage="rag_answer_generation",
+            trace_id=trace_id,
+            session_id=session_id,
+            message_id=assistant_message.message_id,
+            model=generation.model,
+            prompt_tokens=generation.prompt_tokens,
+            completion_tokens=generation.completion_tokens,
+            total_tokens=generation.total_tokens,
+            cost_ms=generation_cost_ms,
+            status="success",
+            **(
+                generation.prompt_identity.as_call_log_fields()
+                if generation.prompt_identity
+                else {}
+            ),
+            detail={
+                "used_reference_count": len(generation.references),
+                "model_called": generation.model is not None,
+                "prompt_source": (
+                    generation.prompt_identity.prompt_source
+                    if generation.prompt_identity
+                    else "none"
+                ),
+                "rejected_by_score_threshold": retrieval_context.context_result.rejected_by_score_threshold,
+            },
+            commit=False,
+        )
+        _create_rag_request_summary(
+            db,
+            trace_id=trace_id,
+            session_id=session_id,
+            assistant_message_id=assistant_message.message_id,
+            document_id=document_id,
+            active_version_id=retrieval_context.active_version_id,
+            model=generation.model,
+            total_tokens=generation.total_tokens,
+            cost_ms=rag_total_cost_ms,
+            status="success",
+            rejected_by_score_threshold=retrieval_context.context_result.rejected_by_score_threshold,
+            used_reference_count=len(generation.references),
+            commit=False,
+        )
         db.commit()
         for reference_record in reference_records:
             db.refresh(reference_record)
     except ModelCallException as exc:
         db.rollback()
-        cost_ms = round((time.perf_counter() - start_time) * 1000)
+        generation_cost_ms = round((time.perf_counter() - generation_start_time) * 1000)
         update_message(
             db,
             assistant_message.message_id,
@@ -248,12 +401,35 @@ def answer_session_with_rag(
         )
         create_call_log(
             db,
-            call_type="session_rag_knowledge_answer",
+            call_type="session_rag",
+            stage="rag_answer_generation",
             trace_id=trace_id,
             session_id=session_id,
             message_id=assistant_message.message_id,
-            cost_ms=cost_ms,
+            model=(rag_prompt.model if rag_prompt else None),
+            cost_ms=generation_cost_ms,
             status="error",
+            error_type=exc.error_type,
+            error_message=exc.message,
+            **(
+                get_rag_answer_prompt_identity(rag_prompt).as_call_log_fields()
+                if rag_prompt
+                else {}
+            ),
+            detail={"prompt_source": "database"} if rag_prompt else None,
+        )
+        _create_rag_request_summary(
+            db,
+            trace_id=trace_id,
+            session_id=session_id,
+            assistant_message_id=assistant_message.message_id,
+            document_id=document_id,
+            active_version_id=retrieval_context.active_version_id,
+            model=None,
+            total_tokens=None,
+            cost_ms=round((time.perf_counter() - rag_start_time) * 1000),
+            status="error",
+            rejected_by_score_threshold=retrieval_context.context_result.rejected_by_score_threshold,
             error_type=exc.error_type,
             error_message=exc.message,
         )
@@ -278,7 +454,7 @@ def answer_session_with_rag(
         prompt_tokens=generation.prompt_tokens,
         completion_tokens=generation.completion_tokens,
         total_tokens=generation.total_tokens,
-        cost_ms=cost_ms,
+        cost_ms=generation_cost_ms,
     )
 
 

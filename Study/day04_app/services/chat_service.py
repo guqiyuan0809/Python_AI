@@ -7,6 +7,7 @@
 import json
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass
 from uuid import uuid4
 
 from openai import OpenAI
@@ -21,6 +22,11 @@ from day04_app.common.exceptions import (
 from day04_app.database import SessionLocal
 from day04_app.schemas.chat_schema import ChatResponse, WorkOrderAnalysisResponse, WorkOrderAnalysisResult
 from day04_app.services.eval_master_service import get_active_prompt_version_for_runtime
+from day04_app.services.prompt_observability_service import (
+    PromptIdentity,
+    build_registry_prompt_identity,
+    render_prompt_template,
+)
 from settings import settings
 
 
@@ -50,6 +56,38 @@ WORK_ORDER_ANALYSIS_USER_PROMPT_TEMPLATE = (
     "}\n\n"
     "工单内容：{content}"
 )
+WORK_ORDER_ANALYSIS_REPAIR_PROMPT_NAME = "work_order_analysis_repair"
+# 仅作为迁移初始化和无数据库单元测试基线；线上修复必须读取 active 版本。
+WORK_ORDER_ANALYSIS_REPAIR_SYSTEM_PROMPT = (
+    "你是 JSON 修复器。你只能输出一个合法 JSON 对象，不能输出解释、Markdown 或代码块。"
+    "必须严格符合字段：category、risk_level、summary、suggestions、need_human_review、confidence。"
+)
+WORK_ORDER_ANALYSIS_REPAIR_USER_PROMPT_TEMPLATE = (
+    "下面是上一次模型输出和校验错误，请修复为合法 JSON。\n"
+    "枚举限制：category=consult|complaint|repair|other，risk_level=low|medium|high。\n"
+    "confidence 必须是 0 到 1 之间的数字，suggestions 必须是 1 到 5 条中文建议。\n\n"
+    "校验错误：{validation_error}\n\n"
+    "上一次输出：\n{raw_text}"
+)
+
+
+@dataclass(frozen=True)
+class WorkOrderModelCallUsage:
+    """单次模型调用用量；修复时不能和首次生成压成一条审计日志。"""
+
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    cost_ms: int
+
+
+@dataclass(frozen=True)
+class WorkOrderAnalysisExecution:
+    """运行时分析结果，保留每次模型调用的边界供可观测层记录。"""
+
+    response: WorkOrderAnalysisResponse
+    initial_usage: WorkOrderModelCallUsage
+    repair_usage: WorkOrderModelCallUsage | None
 
 
 def create_client(timeout: float = 30.0) -> OpenAI:
@@ -96,14 +134,12 @@ def analyze_work_order_structured(content: str) -> WorkOrderAnalysisResponse:
     try:
         # 发布动作只改数据库状态；真实业务在这里读取当前唯一 active 版本，才会实际完成切换。
         prompt = get_active_prompt_version_for_runtime(db, WORK_ORDER_ANALYSIS_PROMPT_NAME)
-        return analyze_work_order_structured_with_prompt(
-            content=content,
-            system_prompt=prompt.system_prompt,
-            user_prompt_template=prompt.user_prompt_template,
-            model=prompt.model or settings.dashscope_model,
-            temperature=prompt.temperature if prompt.temperature is not None else 0.1,
-            max_tokens=prompt.max_tokens or 600,
-        )
+        repair_prompt = get_active_work_order_analysis_repair_prompt(db)
+        return analyze_work_order_structured_with_runtime_prompt(
+            content,
+            prompt,
+            repair_prompt,
+        ).response
     finally:
         db.close()
 
@@ -115,7 +151,45 @@ def analyze_work_order_structured_with_prompt(
     model: str | None = None,
     temperature: float = 0.1,
     max_tokens: int = 600,
+    repair_prompt=None,
 ) -> WorkOrderAnalysisResponse:
+    return analyze_work_order_structured_detailed_with_prompt(
+        content=content,
+        system_prompt=system_prompt,
+        user_prompt_template=user_prompt_template,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        repair_prompt=repair_prompt,
+    ).response
+
+
+def analyze_work_order_structured_with_runtime_prompt(
+    content: str,
+    prompt,
+    repair_prompt,
+) -> WorkOrderAnalysisExecution:
+    """线上调用显式传入已读取的 active Prompt，日志与实际调用必然是同一版本。"""
+    return analyze_work_order_structured_detailed_with_prompt(
+        content=content,
+        system_prompt=prompt.system_prompt,
+        user_prompt_template=prompt.user_prompt_template,
+        model=prompt.model or settings.dashscope_model,
+        temperature=prompt.temperature if prompt.temperature is not None else 0.1,
+        max_tokens=prompt.max_tokens or 600,
+        repair_prompt=repair_prompt,
+    )
+
+
+def analyze_work_order_structured_detailed_with_prompt(
+    content: str,
+    system_prompt: str,
+    user_prompt_template: str,
+    model: str | None = None,
+    temperature: float = 0.1,
+    max_tokens: int = 600,
+    repair_prompt=None,
+) -> WorkOrderAnalysisExecution:
     user_prompt = render_user_prompt(user_prompt_template, content)
     messages = [
         {
@@ -130,6 +204,7 @@ def analyze_work_order_structured_with_prompt(
 
     client = create_client(timeout=30.0)
     try:
+        initial_start_time = time.perf_counter()
         response = call_chat_completion(
             client,
             messages,
@@ -138,15 +213,20 @@ def analyze_work_order_structured_with_prompt(
             max_tokens=max_tokens,
         )
         raw_text = response.choices[0].message.content or ""
+        initial_usage = WorkOrderModelCallUsage(
+            prompt_tokens=response.usage.prompt_tokens,
+            completion_tokens=response.usage.completion_tokens,
+            total_tokens=response.usage.total_tokens,
+            cost_ms=round((time.perf_counter() - initial_start_time) * 1000),
+        )
         try:
             # 模型本质仍返回字符串；这里先抽取 JSON 对象，再交给 Pydantic 做强类型校验。
             analysis = parse_work_order_analysis(raw_text)
             repair_count = 0
-            prompt_tokens = response.usage.prompt_tokens
-            completion_tokens = response.usage.completion_tokens
-            total_tokens = response.usage.total_tokens
+            repair_usage = None
         except (ValidationError, json.JSONDecodeError) as exc:
             # 首次输出不合格时，只允许走一次修复，避免模型格式异常导致接口无限重试。
+            repair_start_time = time.perf_counter()
             repair_response = repair_work_order_analysis_output(
                 client,
                 raw_text,
@@ -154,18 +234,27 @@ def analyze_work_order_structured_with_prompt(
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                repair_prompt=repair_prompt,
             )
             analysis = parse_work_order_analysis(repair_response.choices[0].message.content or "")
             repair_count = 1
-            prompt_tokens = response.usage.prompt_tokens + repair_response.usage.prompt_tokens
-            completion_tokens = response.usage.completion_tokens + repair_response.usage.completion_tokens
-            total_tokens = response.usage.total_tokens + repair_response.usage.total_tokens
-        return WorkOrderAnalysisResponse(
+            repair_usage = WorkOrderModelCallUsage(
+                prompt_tokens=repair_response.usage.prompt_tokens,
+                completion_tokens=repair_response.usage.completion_tokens,
+                total_tokens=repair_response.usage.total_tokens,
+                cost_ms=round((time.perf_counter() - repair_start_time) * 1000),
+            )
+        response_result = WorkOrderAnalysisResponse(
             analysis=analysis,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
+            prompt_tokens=initial_usage.prompt_tokens + (repair_usage.prompt_tokens if repair_usage else 0),
+            completion_tokens=initial_usage.completion_tokens + (repair_usage.completion_tokens if repair_usage else 0),
+            total_tokens=initial_usage.total_tokens + (repair_usage.total_tokens if repair_usage else 0),
             repair_count=repair_count,
+        )
+        return WorkOrderAnalysisExecution(
+            response=response_result,
+            initial_usage=initial_usage,
+            repair_usage=repair_usage,
         )
     except ValidationError as exc:
         raise ModelCallException(
@@ -220,33 +309,55 @@ def repair_work_order_analysis_output(
     model: str | None = None,
     temperature: float = 0.1,
     max_tokens: int = 600,
+    repair_prompt=None,
 ):
+    repair_system_prompt = (
+        repair_prompt.system_prompt
+        if repair_prompt is not None
+        else WORK_ORDER_ANALYSIS_REPAIR_SYSTEM_PROMPT
+    )
+    repair_user_template = (
+        repair_prompt.user_prompt_template
+        if repair_prompt is not None
+        else WORK_ORDER_ANALYSIS_REPAIR_USER_PROMPT_TEMPLATE
+    )
     repair_messages = [
         {
             "role": "system",
-            "content": (
-                "你是 JSON 修复器。你只能输出一个合法 JSON 对象，不能输出解释、Markdown 或代码块。"
-                "必须严格符合字段：category、risk_level、summary、suggestions、need_human_review、confidence。"
-            ),
+            "content": repair_system_prompt,
         },
         {
             "role": "user",
-            "content": (
-                "下面是上一次模型输出和校验错误，请修复为合法 JSON。\n"
-                "枚举限制：category=consult|complaint|repair|other，risk_level=low|medium|high。\n"
-                "confidence 必须是 0 到 1 之间的数字，suggestions 必须是 1 到 5 条中文建议。\n\n"
-                f"校验错误：{error_message}\n\n"
-                f"上一次输出：\n{raw_text}"
+            "content": render_prompt_template(
+                repair_user_template,
+                validation_error=error_message,
+                raw_text=raw_text,
             ),
         },
     ]
     return call_chat_completion(
         client,
         repair_messages,
-        model=model,
-        temperature=temperature,
-        max_tokens=max_tokens,
+        model=(repair_prompt.model or model) if repair_prompt is not None else model,
+        temperature=(
+            repair_prompt.temperature
+            if repair_prompt is not None and repair_prompt.temperature is not None
+            else temperature
+        ),
+        max_tokens=(repair_prompt.max_tokens or max_tokens) if repair_prompt is not None else max_tokens,
     )
+
+
+def get_active_work_order_analysis_repair_prompt(db):
+    return get_active_prompt_version_for_runtime(db, WORK_ORDER_ANALYSIS_REPAIR_PROMPT_NAME)
+
+
+def get_work_order_analysis_repair_prompt_identity(prompt) -> PromptIdentity:
+    return build_registry_prompt_identity(prompt)
+
+
+def get_work_order_analysis_prompt_identity(prompt) -> PromptIdentity:
+    return build_registry_prompt_identity(prompt)
 
 
 def extract_json_object(raw_text: str) -> str:

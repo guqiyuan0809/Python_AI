@@ -59,7 +59,12 @@ from day04_app.services.knowledge_milvus_search_service import (
     search_active_document_chunks,
     search_document_version_chunks_for_validation,
 )
-from day04_app.services.rag_context_service import build_rag_context, generate_rag_answer
+from day04_app.services.rag_context_service import (
+    build_rag_context,
+    generate_rag_answer,
+    get_active_rag_answer_prompt,
+    get_rag_answer_prompt_identity,
+)
 from day04_app.services.session_rag_service import (
     answer_session_with_rag,
     list_session_rag_answer_references,
@@ -876,10 +881,12 @@ def answer_with_rag(
         score_threshold=score_threshold,
     )
     start_time = time.perf_counter()
+    rag_prompt = get_active_rag_answer_prompt(db) if context_result.references else None
     try:
         generation = generate_rag_answer(
             question=request_body.question,
             context_result=context_result,
+            prompt=rag_prompt,
         )
         cost_ms = round((time.perf_counter() - start_time) * 1000)
         # 无资料兜底没有发生模型调用，不应伪造一条成功的模型成本日志。
@@ -894,6 +901,8 @@ def answer_with_rag(
                 total_tokens=generation.total_tokens,
                 cost_ms=cost_ms,
                 status="success",
+                **generation.prompt_identity.as_call_log_fields(),
+                detail={"prompt_source": generation.prompt_identity.prompt_source},
             )
         return success(
             RagAnswerResponse(
@@ -928,11 +937,17 @@ def answer_with_rag(
             db,
             call_type="rag_knowledge_answer",
             trace_id=request.state.trace_id,
-            model=model,
+            model=(rag_prompt.model or settings.dashscope_model) if rag_prompt else model,
             cost_ms=cost_ms,
             status="error",
             error_type=exc.error_type,
             error_message=exc.message,
+            **(
+                get_rag_answer_prompt_identity(rag_prompt).as_call_log_fields()
+                if rag_prompt
+                else {}
+            ),
+            detail={"prompt_source": "database"} if rag_prompt else None,
         )
         raise
 

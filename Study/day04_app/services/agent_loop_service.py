@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -17,6 +18,11 @@ from day04_app.schemas.chat_schema import (
 )
 from day04_app.services.call_log_service import create_call_log
 from day04_app.services.chat_service import call_chat_completion, create_client, extract_json_object
+from day04_app.services.eval_master_service import get_active_prompt_version_for_runtime
+from day04_app.services.prompt_observability_service import (
+    build_registry_prompt_identity,
+    render_prompt_template,
+)
 from day04_app.services.tool_calling_service import (
     TOOL_REGISTRY,
     ToolDecision,
@@ -71,6 +77,14 @@ JSON 格式：
 # Prompt 负责开放式决策；已识别的高风险写操作则必须走确定性路由，
 # 确保模型不会通过额外查询绕开“请求 -> 策略拦截”的安全验证路径。
 AGENT_DECISION_POLICY_VERSION = "agent-loop-policy-v3"
+AGENT_DECISION_PROMPT_NAME = "agent_decision"
+# 仅作为迁移初始化和代码审查基线；线上决策必须读取 ai_prompt_version 的 active 版本。
+AGENT_DECISION_USER_PROMPT_TEMPLATE = (
+    "【用户目标】\n{message}\n\n"
+    "【最大循环步数】\n{max_steps}\n\n"
+    "【可用工具】\n{tools}\n\n"
+    "【已完成步骤和观察结果】\n{steps}"
+)
 _CLOSE_WORK_ORDER_INTENT_PATTERN = re.compile(
     r"^\s*(?:请|帮我|麻烦)?\s*关闭\s*工单\s+"
     r"(?P<business_id>[A-Za-z0-9_-]+)\s*[，,]?\s*"
@@ -211,6 +225,7 @@ def _build_agent_loop_messages(
     message: str,
     steps: list[AgentLoopStepItem],
     max_steps: int,
+    prompt,
 ) -> list[dict[str, str]]:
     tools_text = json.dumps(
         [tool.model_dump() for tool in list_available_tools()],
@@ -223,17 +238,37 @@ def _build_agent_loop_messages(
         indent=2,
     )
     return [
-        {"role": "system", "content": AGENT_LOOP_SYSTEM_PROMPT},
+        {"role": "system", "content": prompt.system_prompt},
         {
             "role": "user",
-            "content": (
-                f"【用户目标】\n{message}\n\n"
-                f"【最大循环步数】\n{max_steps}\n\n"
-                f"【可用工具】\n{tools_text}\n\n"
-                f"【已完成步骤和观察结果】\n{steps_text}"
+            "content": render_prompt_template(
+                prompt.user_prompt_template,
+                message=message,
+                max_steps=max_steps,
+                tools=tools_text,
+                steps=steps_text,
             ),
         },
     ]
+
+
+def get_active_agent_decision_prompt(db: Session):
+    return get_active_prompt_version_for_runtime(db, AGENT_DECISION_PROMPT_NAME)
+
+
+def _get_agent_decision_prompt_identity(prompt):
+    return build_registry_prompt_identity(prompt)
+
+
+def _get_tool_catalog_hash() -> str:
+    """工具定义也会影响真实模型输入，记录哈希而不重复保存完整工具描述。"""
+    canonical = json.dumps(
+        [tool.model_dump() for tool in list_available_tools()],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _build_deterministic_high_risk_decision(message: str) -> AgentLoopDecision | None:
@@ -292,6 +327,9 @@ def _safe_create_agent_loop_log(
     db: Session,
     *,
     trace_id: str | None,
+    task_id: str | None = None,
+    run_id: str | None = None,
+    model: str | None = None,
     prompt_tokens: int | None = None,
     completion_tokens: int | None = None,
     total_tokens: int | None = None,
@@ -305,7 +343,10 @@ def _safe_create_agent_loop_log(
             db,
             call_type="agent_loop",
             trace_id=trace_id,
-            model=settings.dashscope_model,
+            task_id=task_id,
+            run_id=run_id,
+            stage="agent_loop_summary",
+            model=model,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
@@ -313,6 +354,7 @@ def _safe_create_agent_loop_log(
             status=status,
             error_type=error_type,
             error_message=error_message,
+            detail={"summary": True},
         )
     except Exception:
         # Agent 主流程不能因为日志写入失败而失败；回滚当前日志事务即可。
@@ -325,6 +367,10 @@ def run_agent_loop(
     message: str,
     max_steps: int = 3,
     trace_id: str | None = None,
+    task_id: str | None = None,
+    run_id: str | None = None,
+    sample_id: str | None = None,
+    decision_prompt=None,
 ) -> AgentLoopResponse:
     start_time = time.perf_counter()
     steps: list[AgentLoopStepItem] = []
@@ -332,6 +378,12 @@ def run_agent_loop(
     prompt_tokens = 0
     completion_tokens = 0
     total_tokens = 0
+    runtime_prompt = decision_prompt
+    runtime_model = (
+        (runtime_prompt.model or settings.dashscope_model)
+        if runtime_prompt is not None
+        else None
+    )
 
     try:
         for step_index in range(1, max_steps + 1):
@@ -343,23 +395,103 @@ def run_agent_loop(
             )
             if decision is None:
                 # 其他场景仍由模型决定下一步 action；真正执行工具仍然由后端安全门控制。
+                if runtime_prompt is None:
+                    # 同一 Loop 首次调用时固定 active Prompt，后续轮次不受并发发布影响。
+                    runtime_prompt = get_active_agent_decision_prompt(db)
+                runtime_model = runtime_prompt.model or settings.dashscope_model
                 client = create_client(timeout=30.0)
-                response = call_chat_completion(
-                    client,
-                    _build_agent_loop_messages(
-                        message=message,
-                        steps=steps,
-                        max_steps=max_steps,
-                    ),
-                    model=settings.dashscope_model,
-                    temperature=0.0,
-                    max_tokens=500,
+                decision_start_time = time.perf_counter()
+                try:
+                    response = call_chat_completion(
+                        client,
+                        _build_agent_loop_messages(
+                            message=message,
+                            steps=steps,
+                            max_steps=max_steps,
+                            prompt=runtime_prompt,
+                        ),
+                        model=runtime_model,
+                        temperature=(
+                            runtime_prompt.temperature
+                            if runtime_prompt.temperature is not None
+                            else 0.0
+                        ),
+                        max_tokens=runtime_prompt.max_tokens or 500,
+                    )
+                    usage = response.usage
+                    prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
+                    completion_tokens += getattr(usage, "completion_tokens", 0) or 0
+                    total_tokens += getattr(usage, "total_tokens", 0) or 0
+                    decision = _parse_agent_loop_decision(response.choices[0].message.content or "")
+                except Exception as exc:
+                    create_call_log(
+                        db,
+                        call_type="agent_loop",
+                        stage="agent_model_decision",
+                        trace_id=trace_id,
+                        task_id=task_id,
+                        run_id=run_id,
+                        model=runtime_model,
+                        cost_ms=round((time.perf_counter() - decision_start_time) * 1000),
+                        status="error",
+                        error_type=getattr(exc, "error_type", type(exc).__name__),
+                        error_message=getattr(
+                            exc,
+                            "message",
+                            f"Agent 模型决策失败：{type(exc).__name__}",
+                        ),
+                        **_get_agent_decision_prompt_identity(runtime_prompt).as_call_log_fields(),
+                        detail={
+                            "step_index": step_index,
+                            "sample_id": sample_id,
+                            "decision_source": "model",
+                            "prompt_source": "database",
+                            "decision_policy_version": AGENT_DECISION_POLICY_VERSION,
+                            "tool_catalog_hash": _get_tool_catalog_hash(),
+                        },
+                    )
+                    raise
+                create_call_log(
+                    db,
+                    call_type="agent_loop",
+                    stage="agent_model_decision",
+                    trace_id=trace_id,
+                    task_id=task_id,
+                    run_id=run_id,
+                    model=runtime_model,
+                    prompt_tokens=getattr(usage, "prompt_tokens", None),
+                    completion_tokens=getattr(usage, "completion_tokens", None),
+                    total_tokens=getattr(usage, "total_tokens", None),
+                    cost_ms=round((time.perf_counter() - decision_start_time) * 1000),
+                    **_get_agent_decision_prompt_identity(runtime_prompt).as_call_log_fields(),
+                    detail={
+                        "step_index": step_index,
+                        "sample_id": sample_id,
+                        "decision_source": "model",
+                        "action": decision.action,
+                        "tool_name": decision.tool_name,
+                        "prompt_source": "database",
+                        "decision_policy_version": AGENT_DECISION_POLICY_VERSION,
+                        "tool_catalog_hash": _get_tool_catalog_hash(),
+                    },
                 )
-                usage = response.usage
-                prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
-                completion_tokens += getattr(usage, "completion_tokens", 0) or 0
-                total_tokens += getattr(usage, "total_tokens", 0) or 0
-                decision = _parse_agent_loop_decision(response.choices[0].message.content or "")
+            else:
+                create_call_log(
+                    db,
+                    call_type="agent_loop",
+                    stage="agent_route_decision",
+                    trace_id=trace_id,
+                    task_id=task_id,
+                    run_id=run_id,
+                    detail={
+                        "step_index": step_index,
+                        "sample_id": sample_id,
+                        "decision_source": "deterministic_high_risk_route",
+                        "action": decision.action,
+                        "tool_name": decision.tool_name,
+                        "prompt_source": "none",
+                    },
+                )
 
             if decision.action == "final_answer":
                 step = AgentLoopStepItem(
@@ -376,6 +508,9 @@ def run_agent_loop(
                 _safe_create_agent_loop_log(
                     db,
                     trace_id=trace_id,
+                    task_id=task_id,
+                    run_id=run_id,
+                    model=runtime_model,
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     total_tokens=total_tokens,
@@ -387,7 +522,7 @@ def run_agent_loop(
                     status="success",
                     steps=steps,
                     available_tools=list_available_tools(),
-                    model=settings.dashscope_model,
+                    model=runtime_model,
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     total_tokens=total_tokens,
@@ -422,6 +557,9 @@ def run_agent_loop(
                 _safe_create_agent_loop_log(
                     db,
                     trace_id=trace_id,
+                    task_id=task_id,
+                    run_id=run_id,
+                    model=runtime_model,
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     total_tokens=total_tokens,
@@ -433,7 +571,7 @@ def run_agent_loop(
                     status="stopped_by_guardrail",
                     steps=steps,
                     available_tools=list_available_tools(),
-                    model=settings.dashscope_model,
+                    model=runtime_model,
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     total_tokens=total_tokens,
@@ -448,6 +586,7 @@ def run_agent_loop(
                 reason=decision.reason,
             )
             try:
+                tool_start_time = time.perf_counter()
                 raw_observation = execute_registered_tool(db, tool_decision)
                 observation = _normalize_tool_observation(
                     tool_name=decision.tool_name,
@@ -462,6 +601,26 @@ def run_agent_loop(
                     arguments=decision.arguments,
                     exc=exc,
                 )
+            create_call_log(
+                db,
+                call_type="agent_loop",
+                stage="agent_tool_execution",
+                trace_id=trace_id,
+                task_id=task_id,
+                run_id=run_id,
+                cost_ms=round((time.perf_counter() - tool_start_time) * 1000),
+                status="error" if observation["status"] == "error" else "success",
+                error_type=observation.get("error_type"),
+                error_message=observation.get("message") if observation["status"] == "error" else None,
+                detail={
+                    "step_index": step_index,
+                    "sample_id": sample_id,
+                    "tool_name": decision.tool_name,
+                    "argument_names": sorted(decision.arguments),
+                    "observation_status": observation["status"],
+                    "matched_rules": observation.get("matched_rules", []),
+                },
+            )
             steps.append(
                 AgentLoopStepItem(
                     step_index=step_index,
@@ -480,6 +639,9 @@ def run_agent_loop(
                 _safe_create_agent_loop_log(
                     db,
                     trace_id=trace_id,
+                    task_id=task_id,
+                    run_id=run_id,
+                    model=runtime_model,
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     total_tokens=total_tokens,
@@ -491,7 +653,7 @@ def run_agent_loop(
                     status="success",
                     steps=steps,
                     available_tools=list_available_tools(),
-                    model=settings.dashscope_model,
+                    model=runtime_model,
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     total_tokens=total_tokens,
@@ -504,6 +666,9 @@ def run_agent_loop(
         _safe_create_agent_loop_log(
             db,
             trace_id=trace_id,
+            task_id=task_id,
+            run_id=run_id,
+            model=runtime_model,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
@@ -515,7 +680,7 @@ def run_agent_loop(
             status="max_steps_reached",
             steps=steps,
             available_tools=list_available_tools(),
-            model=settings.dashscope_model,
+            model=runtime_model,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
@@ -525,6 +690,9 @@ def run_agent_loop(
         _safe_create_agent_loop_log(
             db,
             trace_id=trace_id,
+            task_id=task_id,
+            run_id=run_id,
+            model=runtime_model,
             cost_ms=round((time.perf_counter() - start_time) * 1000),
             status="error",
             error_type=getattr(exc, "error_type", type(exc).__name__),
@@ -535,6 +703,9 @@ def run_agent_loop(
         _safe_create_agent_loop_log(
             db,
             trace_id=trace_id,
+            task_id=task_id,
+            run_id=run_id,
+            model=runtime_model,
             cost_ms=round((time.perf_counter() - start_time) * 1000),
             status="error",
             error_type=type(exc).__name__,
