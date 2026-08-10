@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from day04_app.common.exceptions import BusinessException, ERROR_TYPE_TASK_TIMEOUT
 from day04_app.models import AiAsyncTask, AiTaskOutbox, ChatMessage
+from day04_app.security.principal import SecurityPrincipal
 from day04_app.utils.snowflake_id import next_snowflake_id
 
 
@@ -128,6 +129,7 @@ def _build_agent_loop_eval_payload(
 def _build_agent_loop_payload(
     task: AiAsyncTask,
     max_steps: int,
+    principal: SecurityPrincipal | None = None,
 ) -> str:
     """持久化可重试 Worker 执行所需的业务 Agent 输入快照。"""
     return json.dumps(
@@ -136,6 +138,8 @@ def _build_agent_loop_payload(
             "trace_id": task.trace_id,
             "message": task.input_text,
             "max_steps": max_steps,
+            # Outbox 只传播脱敏的授权快照，绝不携带 X-API-Key 原文或哈希。
+            "principal": principal.to_snapshot() if principal else None,
         },
         ensure_ascii=False,
     )
@@ -265,13 +269,14 @@ def _create_agent_loop_eval_outbox_event(
 def _create_agent_loop_outbox_event(
     task: AiAsyncTask,
     max_steps: int,
+    principal: SecurityPrincipal | None = None,
     delay_seconds: int = 0,
 ) -> AiTaskOutbox:
     return AiTaskOutbox(
         event_id=next_snowflake_id(),
         task_id=task.task_id,
         event_type=OUTBOX_EVENT_AGENT_LOOP,
-        payload=_build_agent_loop_payload(task, max_steps),
+        payload=_build_agent_loop_payload(task, max_steps, principal),
         status=OUTBOX_STATUS_PENDING,
         available_at=datetime.now() + timedelta(seconds=delay_seconds),
     )
@@ -479,6 +484,7 @@ def create_async_agent_loop_task(
     trace_id: str | None,
     model: str | None,
     max_retries: int,
+    principal: SecurityPrincipal,
 ) -> tuple[AiAsyncTask, AiTaskOutbox]:
     """提交一条在线 Agent 请求，不与批量 Harness 评测混淆。"""
     task = AiAsyncTask(
@@ -492,7 +498,11 @@ def create_async_agent_loop_task(
         max_retries=max_retries,
         status=TASK_STATUS_PENDING,
     )
-    outbox_event = _create_agent_loop_outbox_event(task, max_steps=max_steps)
+    outbox_event = _create_agent_loop_outbox_event(
+        task,
+        max_steps=max_steps,
+        principal=principal,
+    )
     db.add_all([task, outbox_event])
     db.commit()
     db.refresh(task)
@@ -983,8 +993,10 @@ def prepare_agent_loop_eval_task_retry(
     return task, outbox_event
 
 
-def get_agent_loop_retry_parameters(db: Session, task_id: str) -> int:
-    """从已持久化的 Outbox 快照还原原始 Agent 步数上限。"""
+def get_agent_loop_retry_parameters(
+    db: Session, task_id: str
+) -> tuple[int, dict | None]:
+    """从 Outbox 快照恢复 Agent 上限和原始授权快照，重试不能悄悄改变安全上下文。"""
     latest_event = db.scalars(
         select(AiTaskOutbox)
         .where(
@@ -997,7 +1009,8 @@ def get_agent_loop_retry_parameters(db: Session, task_id: str) -> int:
     if latest_event is None:
         raise BusinessException(code=50064, message="Agent Loop 任务缺少 Outbox 参数快照，无法重试")
     try:
-        return int(json.loads(latest_event.payload)["max_steps"])
+        payload = json.loads(latest_event.payload)
+        return int(payload["max_steps"]), payload.get("principal")
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise BusinessException(code=50064, message="Agent Loop Outbox 参数快照已损坏，无法重试") from exc
 
@@ -1007,6 +1020,7 @@ def prepare_agent_loop_task_retry(
     *,
     task_id: str,
     max_steps: int,
+    principal: SecurityPrincipal | None = None,
     delay_seconds: int = 0,
 ) -> tuple[AiAsyncTask, AiTaskOutbox]:
     """按原始受限执行计划重试在线 Agent 请求。"""
@@ -1029,6 +1043,7 @@ def prepare_agent_loop_task_retry(
     outbox_event = _create_agent_loop_outbox_event(
         task,
         max_steps=max_steps,
+        principal=principal,
         delay_seconds=delay_seconds,
     )
     db.add(outbox_event)

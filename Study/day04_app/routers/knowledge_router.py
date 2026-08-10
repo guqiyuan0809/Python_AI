@@ -87,6 +87,13 @@ from day04_app.services.knowledge_retrieval_eval_service import (
 )
 from day04_app.services.call_log_service import create_call_log
 from day04_app.common.exceptions import ModelCallException
+from day04_app.security.dependencies import require_permissions
+from day04_app.security.permissions import (
+    PERMISSION_AI_EVAL_RUN,
+    PERMISSION_AI_INVOKE,
+    PERMISSION_KNOWLEDGE_READ,
+    PERMISSION_KNOWLEDGE_WRITE,
+)
 from day04_app.services.knowledge_vector_index_service import build_version_vector_index
 from day04_app.services.knowledge_document_version_service import activate_document_version
 from day04_app.services.knowledge_document_chunk_service import (
@@ -103,7 +110,13 @@ from day04_app.services.text_chunker_service import ChunkingConfig, ParentChildC
 from settings import settings
 
 
-router = APIRouter(prefix="/api/knowledge", tags=["知识库"])
+router = APIRouter(
+    prefix="/api/knowledge",
+    tags=["知识库"],
+    dependencies=[
+        Depends(require_permissions(PERMISSION_AI_INVOKE, PERMISSION_KNOWLEDGE_READ))
+    ],
+)
 
 
 def _resolve_rag_score_threshold(request_score_threshold: float | None) -> float | None:
@@ -234,7 +247,12 @@ def _to_retrieval_eval_case_result_item(case_result) -> RetrievalEvalCaseResultI
     )
 
 
-@router.post("/documents/upload", response_model=ApiResponse[DocumentUploadResponse], summary="安全上传知识库文件")
+@router.post(
+    "/documents/upload",
+    response_model=ApiResponse[DocumentUploadResponse],
+    summary="安全上传知识库文件",
+    dependencies=[Depends(require_permissions(PERMISSION_KNOWLEDGE_WRITE))],
+)
 async def upload_document(
     request: Request,
     file: UploadFile = File(..., description="仅支持 docx、pdf、xlsx，最大 20MB"),
@@ -301,6 +319,7 @@ def get_document_segments(
     "/retrieval-eval-datasets",
     response_model=ApiResponse[RetrievalEvalDatasetItem],
     summary="创建 RAG 检索评测数据集",
+    dependencies=[Depends(require_permissions(PERMISSION_AI_EVAL_RUN))],
 )
 def create_rag_retrieval_eval_dataset(
     request_body: CreateRetrievalEvalDatasetRequest,
@@ -357,6 +376,7 @@ def get_rag_retrieval_eval_datasets(
     "/retrieval-eval-datasets/{dataset_id}/samples",
     response_model=ApiResponse[RetrievalEvalSampleItem],
     summary="新增一条 RAG 检索评测样本",
+    dependencies=[Depends(require_permissions(PERMISSION_AI_EVAL_RUN))],
 )
 def create_rag_retrieval_eval_sample(
     dataset_id: str,
@@ -415,6 +435,7 @@ def get_rag_retrieval_eval_samples(
     "/retrieval-eval-runs",
     response_model=ApiResponse[RetrievalEvalRunItem],
     summary="运行指定文档版本的 RAG 检索评测",
+    dependencies=[Depends(require_permissions(PERMISSION_AI_EVAL_RUN))],
 )
 def run_rag_retrieval_evaluation(
     request_body: RunRetrievalEvalRequest,
@@ -507,6 +528,7 @@ def get_rag_retrieval_eval_case_results(
     "/documents/{document_id}/parse",
     response_model=ApiResponse[DocumentParseResponse],
     summary="按文档 ID 解析已上传文件",
+    dependencies=[Depends(require_permissions(PERMISSION_KNOWLEDGE_WRITE))],
 )
 def parse_document(
     document_id: str,
@@ -532,6 +554,7 @@ def parse_document(
     "/documents/{document_id}/chunks",
     response_model=ApiResponse[DocumentChunkResponse],
     summary="按文档 ID 生成检索文本切块",
+    dependencies=[Depends(require_permissions(PERMISSION_KNOWLEDGE_WRITE))],
 )
 def chunk_document(
     document_id: str,
@@ -559,6 +582,7 @@ def chunk_document(
     "/documents/{document_id}/versions",
     response_model=ApiResponse[CreateDocumentVersionResponse],
     summary="创建文档候选索引版本",
+    dependencies=[Depends(require_permissions(PERMISSION_KNOWLEDGE_WRITE))],
 )
 def create_document_version(
     document_id: str,
@@ -588,6 +612,7 @@ def create_document_version(
     "/documents/{document_id}/versions/{version_id}/chunks",
     response_model=ApiResponse[VersionChunkResponse],
     summary="按候选版本独立生成检索文本切块",
+    dependencies=[Depends(require_permissions(PERMISSION_KNOWLEDGE_WRITE))],
 )
 def chunk_document_version(
     document_id: str,
@@ -617,6 +642,7 @@ def chunk_document_version(
     "/documents/{document_id}/versions/{version_id}/parent-child-chunks",
     response_model=ApiResponse[ParentChildChunkResponse],
     summary="为候选版本生成父子检索切块",
+    dependencies=[Depends(require_permissions(PERMISSION_KNOWLEDGE_WRITE))],
 )
 def chunk_document_version_parent_child(
     document_id: str,
@@ -653,6 +679,7 @@ def chunk_document_version_parent_child(
     "/document-versions/{version_id}/contextual-index/async",
     response_model=ApiResponse[ContextualIndexTaskSubmitResponse],
     summary="异步生成父子切块上下文并构建向量索引",
+    dependencies=[Depends(require_permissions(PERMISSION_KNOWLEDGE_WRITE))],
 )
 def submit_contextual_index_task(
     version_id: str,
@@ -1072,6 +1099,7 @@ def get_session_rag_answer_references(
     "/document-versions/{version_id}/vector-index",
     response_model=ApiResponse[DocumentVersionIndexResponse],
     summary="为指定文档版本构建 Milvus 向量索引",
+    dependencies=[Depends(require_permissions(PERMISSION_KNOWLEDGE_WRITE))],
 )
 def build_document_version_vector_index(
     version_id: str,
@@ -1099,6 +1127,7 @@ def build_document_version_vector_index(
     "/document-versions/{version_id}/activate",
     response_model=ApiResponse[ActivateDocumentVersionResponse],
     summary="校验后切换知识库文档的 active 版本",
+    dependencies=[Depends(require_permissions(PERMISSION_KNOWLEDGE_WRITE))],
 )
 def activate_document_version_endpoint(
     version_id: str,
@@ -1109,7 +1138,8 @@ def activate_document_version_endpoint(
     document, version, previous_version_id = activate_document_version(
         db,
         version_id=version_id,
-        activated_by=request_body.activated_by,
+        # 版本切换审计人来自认证上下文，不能接受客户端伪造身份。
+        activated_by=request.state.principal.actor_id,
         activation_note=request_body.activation_note,
     )
     return success(

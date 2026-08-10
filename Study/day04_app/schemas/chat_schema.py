@@ -177,6 +177,29 @@ class AiCallLogPageResponse(BaseModel):
     items: list[AiCallLogItem]
 
 
+class AiSecurityAuditItem(BaseModel):
+    audit_id: str
+    trace_id: str | None = None
+    actor_id: str | None = None
+    api_key_id: str | None = None
+    roles: list[str]
+    permission: str
+    http_method: str
+    request_path: str
+    decision: Literal["allow", "deny"]
+    reason: str
+    resource_type: str | None = None
+    resource_id: str | None = None
+    created_at: str
+
+
+class AiSecurityAuditPageResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[AiSecurityAuditItem]
+
+
 class AiTraceTaskItem(BaseModel):
     task_id: str
     trace_id: str | None = None
@@ -333,8 +356,11 @@ class AiEvalGateDecisionPageResponse(BaseModel):
 class PublishPromptVersionRequest(BaseModel):
     gate_id: str = Field(..., min_length=1, description="本次发布依据的评测门禁 ID")
     approval_note: str = Field(..., min_length=5, max_length=1000, description="人工批准说明")
-    # 当前 Python 服务未接入登录体系，先显式传入；后续应由 Java 透传的登录用户替代。
-    approved_by: str = Field("manual_reviewer", min_length=1, max_length=64, description="批准人标识")
+    approved_by: str | None = Field(
+        None,
+        max_length=64,
+        description="已废弃兼容字段；服务端始终使用认证 Principal，客户端值不会生效",
+    )
 
 
 class AiPromptPublishAuditItem(BaseModel):
@@ -359,8 +385,11 @@ class AiPromptPublishAuditPageResponse(BaseModel):
 
 class RollbackPromptVersionRequest(BaseModel):
     rollback_reason: str = Field(..., min_length=5, max_length=1000, description="人工回滚原因")
-    # 当前 Python 服务未接入登录体系，先显式传入；后续应由 Java 透传的登录用户替代。
-    rolled_back_by: str = Field("manual_reviewer", min_length=1, max_length=64, description="回滚执行人标识")
+    rolled_back_by: str | None = Field(
+        None,
+        max_length=64,
+        description="已废弃兼容字段；服务端始终使用认证 Principal，客户端值不会生效",
+    )
 
 
 class AiPromptRollbackAuditItem(BaseModel):

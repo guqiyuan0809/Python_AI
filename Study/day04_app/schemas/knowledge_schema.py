@@ -665,9 +665,13 @@ class DocumentVersionIndexResponse(BaseModel):
 
 
 class ActivateDocumentVersionRequest(BaseModel):
-    """切换当前检索版本的人工审计信息；接入认证后应从登录上下文获取操作者。"""
+    """切换当前检索版本的人工审计信息。"""
 
-    activated_by: str = Field(..., min_length=1, max_length=64, description="执行版本切换的人员标识")
+    activated_by: str | None = Field(
+        None,
+        max_length=64,
+        description="已废弃兼容字段；服务端始终使用认证 Principal，客户端值不会生效",
+    )
     activation_note: str = Field(..., min_length=1, max_length=500, description="确认向量数量和检索质量后的切换说明")
 
 

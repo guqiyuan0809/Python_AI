@@ -1565,3 +1565,59 @@ class AiPromptRollbackAudit(Base):
         default=datetime.now,
         comment="实际完成版本状态切换的时间",
     )
+
+
+class AiSecurityAuditLog(Base):
+    """Day27 授权决策审计，只记录脱敏身份与权限事实。"""
+
+    __tablename__ = "ai_security_audit_log"
+    __table_args__ = (
+        Index("ix_asal_trace", "trace_id"),
+        Index("ix_asal_actor", "actor_id"),
+        Index("ix_asal_permission", "permission"),
+        Index("ix_asal_decision", "decision"),
+        Index("ix_asal_created", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True, comment="数据库自增主键"
+    )
+    audit_id: Mapped[str] = mapped_column(
+        String(64), unique=True, comment="授权审计业务唯一 ID"
+    )
+    trace_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, comment="关联本次 HTTP 请求链路 ID"
+    )
+    actor_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, comment="调用者身份 ID；认证失败时为空"
+    )
+    api_key_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, comment="API Key 管理标识，不保存原始 Key 或 Key 哈希"
+    )
+    roles_json: Mapped[str] = mapped_column(
+        Text, comment="调用者角色名称 JSON 快照"
+    )
+    permission: Mapped[str] = mapped_column(
+        String(255), comment="本次请求要求的权限，多个权限以逗号分隔"
+    )
+    http_method: Mapped[str] = mapped_column(
+        String(16), comment="HTTP 请求方法"
+    )
+    request_path: Mapped[str] = mapped_column(
+        String(255), comment="请求路径，不包含查询参数和请求正文"
+    )
+    decision: Mapped[str] = mapped_column(
+        String(16), comment="授权结论：allow 或 deny"
+    )
+    reason: Mapped[str] = mapped_column(
+        String(64), comment="授权结论原因代码，不保存敏感业务内容"
+    )
+    resource_type: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, comment="被访问资源类型，例如 prompt、task、trace"
+    )
+    resource_id: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, comment="来自受信任路径参数的资源业务 ID"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, comment="授权决策发生时间"
+    )

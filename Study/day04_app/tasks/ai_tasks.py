@@ -55,6 +55,7 @@ from day04_app.services.eval_result_service import save_eval_report
 from day04_app.services.agent_loop_eval_result_service import save_agent_eval_report
 from day04_app.services.agent_loop_eval_runner import run_agent_loop_eval
 from day04_app.services.agent_loop_service import run_agent_loop
+from day04_app.security.principal import SecurityPrincipal
 from day04_app.services.work_order_eval_runner import run_work_order_eval
 from day04_app.services.knowledge_contextualization_service import build_contextual_vector_index
 from settings import settings
@@ -69,6 +70,7 @@ def execute_agent_loop_task(
     trace_id: str | None,
     message: str,
     max_steps: int,
+    principal: dict | None = None,
 ) -> dict:
     """消费 Outbox 事件后执行一条在线 Agent Loop 请求。"""
     db = SessionLocal()
@@ -85,6 +87,7 @@ def execute_agent_loop_task(
             max_steps=max_steps,
             trace_id=trace_id,
             task_id=task_id,
+            principal=SecurityPrincipal.from_snapshot(principal),
         )
         completed_task = mark_task_success(
             db,
@@ -144,6 +147,7 @@ def execute_agent_loop_task(
                 db,
                 task_id=task_id,
                 max_steps=max_steps,
+                principal=SecurityPrincipal.from_snapshot(principal),
                 delay_seconds=delay_seconds,
             )
             dispatch_outbox_event(db, retry_event.event_id)

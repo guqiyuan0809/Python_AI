@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from day04_app.common.exceptions import BusinessException
+from day04_app.common.exceptions import BusinessException, SecurityException
 from day04_app.common.response import fail
 
 
@@ -34,6 +34,20 @@ def get_validation_message(exc: RequestValidationError) -> str:
 
 
 def register_exception_handlers(app: FastAPI) -> None:
+    @app.exception_handler(SecurityException)
+    async def security_exception_handler(
+        request: Request, exc: SecurityException
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=fail(
+                code=exc.code,
+                message=exc.message,
+                trace_id=get_trace_id(request),
+            ).model_dump(),
+            headers={"WWW-Authenticate": "ApiKey"} if exc.status_code == 401 else None,
+        )
+
     @app.exception_handler(BusinessException)
     async def business_exception_handler(
         request: Request, exc: BusinessException

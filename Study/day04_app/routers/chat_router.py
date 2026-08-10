@@ -17,6 +17,8 @@ from day04_app.database import get_db
 from day04_app.schemas.chat_schema import (
     AiCallLogItem,
     AiCallLogPageResponse,
+    AiSecurityAuditItem,
+    AiSecurityAuditPageResponse,
     AiTraceObservabilityResponse,
     AiTraceTaskItem,
     AiAgentEvalCaseResultItem,
@@ -148,6 +150,7 @@ from day04_app.services.session_service import (
     create_session,
     generate_session_title,
     get_session,
+    get_session_for_actor,
     get_session_messages,
     get_session_messages_page,
     list_sessions,
@@ -160,14 +163,52 @@ from day04_app.services.session_service import (
 from day04_app.services.outbox_dispatcher import dispatch_outbox_event
 from day04_app.services.structured_result_service import create_structured_result
 from day04_app.services.structured_result_service import get_structured_result_by_task_id, load_result_json
+from day04_app.services.security_audit_service import list_security_audits
 from day04_app.common.exceptions import (
     ERROR_TYPE_STRUCTURED_FIELD_INVALID,
     ERROR_TYPE_STRUCTURED_JSON_INVALID,
 )
+from day04_app.security.dependencies import require_permissions
+from day04_app.security.principal import SecurityPrincipal
+from day04_app.security.permissions import (
+    PERMISSION_AI_EVAL_RUN,
+    PERMISSION_AI_INVOKE,
+    PERMISSION_AI_OPS_READ,
+    PERMISSION_AI_SECURITY_AUDIT_READ,
+    PERMISSION_AI_PROMPT_PUBLISH,
+    PERMISSION_AI_TASK_OPERATE,
+    PERMISSION_TOOL_EXECUTE,
+)
 from settings import settings
 
 
-router = APIRouter(prefix="/api/chat", tags=["AI 聊天"])
+router = APIRouter(
+    prefix="/api/chat",
+    tags=["AI 聊天"],
+    dependencies=[Depends(require_permissions(PERMISSION_AI_INVOKE))],
+)
+
+
+def get_authorized_session(db: Session, request: Request, session_id: str):
+    """安全模式按可信 actor 校验会话归属；兼容模式保持原有教学接口行为。"""
+    if settings.security_enabled:
+        return get_session_for_actor(
+            db,
+            session_id,
+            request.state.principal.actor_id,
+        )
+    return get_session(db, session_id)
+
+
+def ensure_task_session_access(db: Session, request: Request, task) -> None:
+    """面向用户会话的异步任务沿用会话归属；系统级任务继续由其操作权限控制。"""
+    if not settings.security_enabled or task.session_id.startswith("system_"):
+        return
+    get_session_for_actor(
+        db,
+        task.session_id,
+        request.state.principal.actor_id,
+    )
 
 
 def to_message_item(message) -> ChatMessageItem:
@@ -225,6 +266,24 @@ def to_call_log_item(call_log) -> AiCallLogItem:
         error_message=call_log.error_message,
         detail=load_call_log_detail(call_log),
         created_at=call_log.created_at.isoformat(timespec="seconds"),
+    )
+
+
+def to_security_audit_item(audit) -> AiSecurityAuditItem:
+    return AiSecurityAuditItem(
+        audit_id=audit.audit_id,
+        trace_id=audit.trace_id,
+        actor_id=audit.actor_id,
+        api_key_id=audit.api_key_id,
+        roles=json.loads(audit.roles_json),
+        permission=audit.permission,
+        http_method=audit.http_method,
+        request_path=audit.request_path,
+        decision=audit.decision,
+        reason=audit.reason,
+        resource_type=audit.resource_type,
+        resource_id=audit.resource_id,
+        created_at=audit.created_at.isoformat(timespec="seconds"),
     )
 
 
@@ -499,6 +558,7 @@ def chat(request_body: ChatRequest, request: Request) -> ApiResponse[ChatRespons
     "/tool-calling",
     response_model=ApiResponse[ToolCallingResponse],
     summary="Day23 单轮 Tool Calling：模型选择白名单工具并生成最终回答",
+    dependencies=[Depends(require_permissions(PERMISSION_TOOL_EXECUTE))],
 )
 def tool_calling_chat(
     request_body: ToolCallingRequest,
@@ -509,6 +569,7 @@ def tool_calling_chat(
         db,
         request_body.message,
         trace_id=request.state.trace_id,
+        principal=request.state.principal,
     )
     return success(
         result,
@@ -521,6 +582,7 @@ def tool_calling_chat(
     "/agent-loop",
     response_model=ApiResponse[AgentLoopResponse],
     summary="Day24 受控 Agent Loop：感知、决策、行动、观察反馈、停止",
+    dependencies=[Depends(require_permissions(PERMISSION_TOOL_EXECUTE))],
 )
 def agent_loop_chat(
     request_body: AgentLoopRequest,
@@ -532,6 +594,7 @@ def agent_loop_chat(
         message=request_body.message,
         max_steps=request_body.max_steps,
         trace_id=request.state.trace_id,
+        principal=request.state.principal,
     )
     return success(
         result,
@@ -544,6 +607,7 @@ def agent_loop_chat(
     "/agent-loop/async",
     response_model=ApiResponse[AsyncTaskSubmitResponse],
     summary="异步执行一条在线 Agent Loop 请求",
+    dependencies=[Depends(require_permissions(PERMISSION_TOOL_EXECUTE))],
 )
 def submit_async_agent_loop(
     request_body: AsyncAgentLoopTaskRequest,
@@ -557,6 +621,7 @@ def submit_async_agent_loop(
         trace_id=request.state.trace_id,
         model=settings.dashscope_model,
         max_retries=settings.async_task_max_retries,
+        principal=request.state.principal,
     )
     dispatch_outbox_event(db, outbox_event.event_id)
     return success(
@@ -739,6 +804,7 @@ def parse_work_order_analysis_test(
     "/failure-samples",
     response_model=ApiResponse[AiFailureSamplePageResponse],
     summary="分页查询 AI 失败样本",
+    dependencies=[Depends(require_permissions(PERMISSION_AI_OPS_READ))],
 )
 def list_ai_failure_samples(
     request: Request,
@@ -772,6 +838,15 @@ def list_ai_failure_samples(
     "/failure-samples/{sample_id}/convert-to-eval-sample",
     response_model=ApiResponse[AiEvalSampleItem],
     summary="将失败样本转入评测样本库",
+    dependencies=[
+        Depends(
+            require_permissions(
+                PERMISSION_AI_EVAL_RUN,
+                resource_type="failure_sample",
+                resource_param="sample_id",
+            )
+        )
+    ],
 )
 def convert_ai_failure_sample_to_eval_sample(
     sample_id: str,
@@ -800,6 +875,7 @@ def convert_ai_failure_sample_to_eval_sample(
     "/prompt-versions",
     response_model=ApiResponse[AiPromptVersionPageResponse],
     summary="分页查询 AI Prompt 版本",
+    dependencies=[Depends(require_permissions(PERMISSION_AI_OPS_READ))],
 )
 def list_ai_prompt_versions(
     request: Request,
@@ -831,6 +907,15 @@ def list_ai_prompt_versions(
     "/prompt-versions/{prompt_id}/publish",
     response_model=ApiResponse[AiPromptPublishAuditItem],
     summary="人工批准发布候选 Prompt 版本",
+    dependencies=[
+        Depends(
+            require_permissions(
+                PERMISSION_AI_PROMPT_PUBLISH,
+                resource_type="prompt",
+                resource_param="prompt_id",
+            )
+        )
+    ],
 )
 def publish_ai_prompt_version(
     prompt_id: str,
@@ -843,7 +928,8 @@ def publish_ai_prompt_version(
         prompt_id=prompt_id,
         gate_id=request_body.gate_id,
         approval_note=request_body.approval_note,
-        approved_by=request_body.approved_by,
+        # 审批人必须来自已认证上下文，不能信任请求体中可伪造的人员字段。
+        approved_by=request.state.principal.actor_id,
     )
     return success(
         to_prompt_publish_audit_item(audit),
@@ -856,6 +942,7 @@ def publish_ai_prompt_version(
     "/prompt-publish-audits",
     response_model=ApiResponse[AiPromptPublishAuditPageResponse],
     summary="分页查询 Prompt 发布审计记录",
+    dependencies=[Depends(require_permissions(PERMISSION_AI_OPS_READ))],
 )
 def list_ai_prompt_publish_audits(
     request: Request,
@@ -885,6 +972,15 @@ def list_ai_prompt_publish_audits(
     "/prompt-publish-audits/{publish_id}/rollback",
     response_model=ApiResponse[AiPromptRollbackAuditItem],
     summary="人工回滚 Prompt 到原线上版本",
+    dependencies=[
+        Depends(
+            require_permissions(
+                PERMISSION_AI_PROMPT_PUBLISH,
+                resource_type="prompt_publish",
+                resource_param="publish_id",
+            )
+        )
+    ],
 )
 def rollback_ai_prompt_version(
     publish_id: str,
@@ -896,7 +992,7 @@ def rollback_ai_prompt_version(
         db,
         publish_id=publish_id,
         rollback_reason=request_body.rollback_reason,
-        rolled_back_by=request_body.rolled_back_by,
+        rolled_back_by=request.state.principal.actor_id,
     )
     return success(
         to_prompt_rollback_audit_item(audit),
@@ -909,6 +1005,7 @@ def rollback_ai_prompt_version(
     "/prompt-rollback-audits",
     response_model=ApiResponse[AiPromptRollbackAuditPageResponse],
     summary="分页查询 Prompt 回滚审计记录",
+    dependencies=[Depends(require_permissions(PERMISSION_AI_OPS_READ))],
 )
 def list_ai_prompt_rollback_audits(
     request: Request,
@@ -938,6 +1035,7 @@ def list_ai_prompt_rollback_audits(
     "/eval-datasets",
     response_model=ApiResponse[AiEvalDatasetPageResponse],
     summary="分页查询 AI 评测数据集",
+    dependencies=[Depends(require_permissions(PERMISSION_AI_OPS_READ))],
 )
 def list_ai_eval_datasets(
     request: Request,
@@ -969,6 +1067,7 @@ def list_ai_eval_datasets(
     "/eval-samples",
     response_model=ApiResponse[AiEvalSamplePageResponse],
     summary="分页查询 AI 评测样本",
+    dependencies=[Depends(require_permissions(PERMISSION_AI_OPS_READ))],
 )
 def list_ai_eval_samples(
     request: Request,
@@ -1002,6 +1101,7 @@ def list_ai_eval_samples(
     "/eval-runs",
     response_model=ApiResponse[AiEvalRunPageResponse],
     summary="分页查询 AI 评测运行记录",
+    dependencies=[Depends(require_permissions(PERMISSION_AI_OPS_READ))],
 )
 def list_ai_eval_runs(
     request: Request,
@@ -1035,6 +1135,7 @@ def list_ai_eval_runs(
     "/eval-runs/{run_id}/cases",
     response_model=ApiResponse[AiEvalCaseResultPageResponse],
     summary="分页查询某次 AI 评测的样本明细",
+    dependencies=[Depends(require_permissions(PERMISSION_AI_OPS_READ))],
 )
 def list_ai_eval_case_results(
     run_id: str,
@@ -1067,6 +1168,7 @@ def list_ai_eval_case_results(
     "/eval-gates/compare",
     response_model=ApiResponse[AiEvalGateDecisionItem],
     summary="比较基线与候选 Prompt 的评测准入结果",
+    dependencies=[Depends(require_permissions(PERMISSION_AI_EVAL_RUN))],
 )
 def compare_ai_eval_gate(
     request_body: EvalGateCompareRequest,
@@ -1090,6 +1192,7 @@ def compare_ai_eval_gate(
     "/eval-gates",
     response_model=ApiResponse[AiEvalGateDecisionPageResponse],
     summary="分页查询 Prompt 评测准入记录",
+    dependencies=[Depends(require_permissions(PERMISSION_AI_OPS_READ))],
 )
 def list_ai_eval_gate_records(
     request: Request,
@@ -1121,6 +1224,7 @@ def list_ai_eval_gate_records(
     "/agent-eval-runs",
     response_model=ApiResponse[AiAgentEvalRunPageResponse],
     summary="分页查询 Agent Loop Harness 运行记录",
+    dependencies=[Depends(require_permissions(PERMISSION_AI_OPS_READ))],
 )
 def list_agent_loop_eval_runs(
     request: Request,
@@ -1154,6 +1258,7 @@ def list_agent_loop_eval_runs(
     "/agent-eval-runs/{run_id}/cases",
     response_model=ApiResponse[AiAgentEvalCaseResultPageResponse],
     summary="分页查询某次 Agent Loop Harness 的样本明细",
+    dependencies=[Depends(require_permissions(PERMISSION_AI_OPS_READ))],
 )
 def list_agent_loop_eval_case_results(
     run_id: str,
@@ -1186,6 +1291,7 @@ def list_agent_loop_eval_case_results(
     "/agent-eval-gates/compare",
     response_model=ApiResponse[AiAgentEvalGateDecisionItem],
     summary="比较基线与候选 Agent Loop Harness 的准入结果",
+    dependencies=[Depends(require_permissions(PERMISSION_AI_EVAL_RUN))],
 )
 def compare_agent_loop_eval_gate(
     request_body: AgentEvalGateCompareRequest,
@@ -1209,6 +1315,7 @@ def compare_agent_loop_eval_gate(
     "/agent-eval-gates",
     response_model=ApiResponse[AiAgentEvalGateDecisionPageResponse],
     summary="分页查询 Agent Loop Harness 准入记录",
+    dependencies=[Depends(require_permissions(PERMISSION_AI_OPS_READ))],
 )
 def list_agent_loop_eval_gate_records(
     request: Request,
@@ -1240,6 +1347,7 @@ def list_agent_loop_eval_gate_records(
     "/agent-evals/run/async",
     response_model=ApiResponse[AsyncTaskSubmitResponse],
     summary="异步触发 Agent Loop Harness",
+    dependencies=[Depends(require_permissions(PERMISSION_AI_EVAL_RUN))],
 )
 def submit_async_agent_loop_eval(
     request_body: AsyncAgentLoopEvalTaskRequest,
@@ -1267,6 +1375,7 @@ def submit_async_agent_loop_eval(
     "/evals/work-order/run/async",
     response_model=ApiResponse[AsyncTaskSubmitResponse],
     summary="异步触发工单结构化分析评测",
+    dependencies=[Depends(require_permissions(PERMISSION_AI_EVAL_RUN))],
 )
 def submit_async_work_order_eval(
     request_body: AsyncWorkOrderEvalTaskRequest,
@@ -1302,7 +1411,8 @@ def submit_async_work_order_eval(
 def create_chat_session(
     request: Request, db: Session = Depends(get_db)
 ) -> ApiResponse[CreateSessionResponse]:
-    session_id = create_session(db)
+    owner_id = request.state.principal.actor_id if settings.security_enabled else None
+    session_id = create_session(db, user_id=owner_id)
     return success(
         CreateSessionResponse(session_id=session_id),
         message="会话创建成功",
@@ -1323,11 +1433,14 @@ def list_chat_sessions(
     db: Session = Depends(get_db),
 ) -> ApiResponse[SessionListResponse]:
     # 查询会话列表时只返回会话级信息，不返回消息明细，避免列表页数据过大。
+    effective_user_id = (
+        request.state.principal.actor_id if settings.security_enabled else user_id
+    )
     sessions, total = list_sessions(
         db,
         page=page,
         page_size=page_size,
-        user_id=user_id,
+        user_id=effective_user_id,
     )
     return success(
         SessionListResponse(
@@ -1352,6 +1465,7 @@ def update_chat_session_title(
     request: Request,
     db: Session = Depends(get_db),
 ) -> ApiResponse[SessionTitleResponse]:
+    get_authorized_session(db, request, session_id)
     # 手动标题以用户输入为准，适合前端提供“重命名会话”功能。
     chat_session = update_session_title(db, session_id, request_body.title)
     return success(
@@ -1375,6 +1489,7 @@ def generate_chat_session_title(
     request: Request,
     db: Session = Depends(get_db),
 ) -> ApiResponse[SessionTitleResponse]:
+    get_authorized_session(db, request, session_id)
     # 自动生成标题会读取会话历史，优先调用模型生成，失败时使用规则标题兜底。
     chat_session = generate_session_title(db, session_id)
     return success(
@@ -1397,6 +1512,7 @@ def archive_chat_session(
     request: Request,
     db: Session = Depends(get_db),
 ) -> ApiResponse[SessionStatusResponse]:
+    get_authorized_session(db, request, session_id)
     # 对外表现为删除会话，底层只做逻辑归档，不物理删除聊天记录。
     chat_session = archive_session(db, session_id)
     return success(
@@ -1419,6 +1535,7 @@ def restore_chat_session(
     request: Request,
     db: Session = Depends(get_db),
 ) -> ApiResponse[SessionStatusResponse]:
+    get_authorized_session(db, request, session_id)
     # 恢复归档会话后，它会重新出现在默认会话列表中。
     chat_session = restore_session(db, session_id)
     return success(
@@ -1439,7 +1556,7 @@ def restore_chat_session(
 def list_session_messages(
     session_id: str, request: Request, db: Session = Depends(get_db)
 ) -> ApiResponse[SessionMessagesResponse]:
-    chat_session = get_session(db, session_id)
+    chat_session = get_authorized_session(db, request, session_id)
     messages = get_session_messages(db, session_id)
     return success(
         SessionMessagesResponse(
@@ -1463,7 +1580,7 @@ def list_session_messages_page(
     page_size: int = Query(20, ge=1, le=100, description="每页消息数量"),
     db: Session = Depends(get_db),
 ) -> ApiResponse[SessionMessagesPageResponse]:
-    chat_session = get_session(db, session_id)
+    chat_session = get_authorized_session(db, request, session_id)
     messages, total = get_session_messages_page(
         db,
         session_id=session_id,
@@ -1491,6 +1608,7 @@ def list_session_messages_page(
 def refresh_summary(
     session_id: str, request: Request, db: Session = Depends(get_db)
 ) -> ApiResponse[RefreshSessionSummaryResponse]:
+    get_authorized_session(db, request, session_id)
     summary_record = refresh_session_summary(db, session_id)
     return success(
         RefreshSessionSummaryResponse(
@@ -1516,6 +1634,7 @@ def session_chat(
     db: Session = Depends(get_db),
 ) -> ApiResponse[ChatResponse]:
     trace_id = request.state.trace_id
+    get_authorized_session(db, request, request_body.session_id)
     messages = build_messages(
         db=db,
         session_id=request_body.session_id,
@@ -1589,9 +1708,46 @@ def session_chat(
 
 
 @router.get(
+    "/security-audits",
+    response_model=ApiResponse[AiSecurityAuditPageResponse],
+    summary="分页查询 API 认证与 RBAC 授权审计",
+    dependencies=[Depends(require_permissions(PERMISSION_AI_SECURITY_AUDIT_READ))],
+)
+def list_ai_security_audits(
+    request: Request,
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    trace_id: str | None = Query(None, description="请求链路 ID"),
+    actor_id: str | None = Query(None, description="调用者身份 ID"),
+    permission: str | None = Query(None, description="要求的权限"),
+    decision: str | None = Query(None, description="授权结论 allow/deny"),
+    db: Session = Depends(get_db),
+) -> ApiResponse[AiSecurityAuditPageResponse]:
+    audits, total = list_security_audits(
+        db,
+        page=page,
+        page_size=page_size,
+        trace_id=trace_id,
+        actor_id=actor_id,
+        permission=permission,
+        decision=decision,
+    )
+    return success(
+        AiSecurityAuditPageResponse(
+            total=total,
+            page=page,
+            page_size=page_size,
+            items=[to_security_audit_item(item) for item in audits],
+        ),
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.get(
     "/call-logs",
     response_model=ApiResponse[AiCallLogPageResponse],
     summary="分页查询 AI 调用日志",
+    dependencies=[Depends(require_permissions(PERMISSION_AI_OPS_READ))],
 )
 def list_ai_call_logs(
     request: Request,
@@ -1638,6 +1794,15 @@ def list_ai_call_logs(
     "/observability/traces/{trace_id}",
     response_model=ApiResponse[AiTraceObservabilityResponse],
     summary="按 trace_id 查询 AI 可观测链路",
+    dependencies=[
+        Depends(
+            require_permissions(
+                PERMISSION_AI_OPS_READ,
+                resource_type="trace",
+                resource_param="trace_id",
+            )
+        )
+    ],
 )
 def get_ai_trace_observability(
     trace_id: str,
@@ -1685,7 +1850,7 @@ def submit_async_session_chat(
     trace_id = request.state.trace_id
 
     # 先校验会话存在，再创建任务记录，避免后台任务拿到无效 session_id。
-    get_session(db, request_body.session_id)
+    get_authorized_session(db, request, request_body.session_id)
     task, outbox_event = create_async_session_chat_task(
         db,
         session_id=request_body.session_id,
@@ -1720,7 +1885,7 @@ def submit_async_work_order_analysis(
     trace_id = request.state.trace_id
 
     # 结构化分析异步任务也必须归属会话，方便后续查询聊天历史和审计。
-    get_session(db, request_body.session_id)
+    get_authorized_session(db, request, request_body.session_id)
     task, outbox_event = create_async_work_order_analysis_task(
         db,
         session_id=request_body.session_id,
@@ -1745,6 +1910,7 @@ def submit_async_work_order_analysis(
     "/tasks/actions/timeout-scan",
     response_model=ApiResponse[AsyncTaskTimeoutScanResponse],
     summary="扫描并标记超时异步任务",
+    dependencies=[Depends(require_permissions(PERMISSION_AI_TASK_OPERATE))],
 )
 def scan_timeout_async_tasks(
     request: Request,
@@ -1774,6 +1940,7 @@ def get_async_task_status(
     db: Session = Depends(get_db),
 ) -> ApiResponse[AsyncTaskStatusResponse]:
     task = get_async_task(db, task_id)
+    ensure_task_session_access(db, request, task)
     structured_result_json = None
     if task.status == "success" and task.task_type == "work_order_analysis":
         structured_result = get_structured_result_by_task_id(db, task_id)
@@ -1788,6 +1955,15 @@ def get_async_task_status(
     "/tasks/{task_id}/retry",
     response_model=ApiResponse[AsyncTaskSubmitResponse],
     summary="重试失败的异步任务",
+    dependencies=[
+        Depends(
+            require_permissions(
+                PERMISSION_AI_TASK_OPERATE,
+                resource_type="task",
+                resource_param="task_id",
+            )
+        )
+    ],
 )
 def retry_async_task(
     task_id: str,
@@ -1796,6 +1972,7 @@ def retry_async_task(
     db: Session = Depends(get_db),
 ) -> ApiResponse[AsyncTaskSubmitResponse]:
     existing_task = get_async_task(db, task_id)
+    ensure_task_session_access(db, request, existing_task)
     if existing_task.task_type == "session_rag":
         (
             document_id,
@@ -1819,11 +1996,13 @@ def retry_async_task(
             score_threshold=score_threshold,
         )
     elif existing_task.task_type == "agent_loop":
-        max_steps = get_agent_loop_retry_parameters(db, task_id)
+        max_steps, principal_snapshot = get_agent_loop_retry_parameters(db, task_id)
         task, outbox_event = prepare_agent_loop_task_retry(
             db,
             task_id=task_id,
             max_steps=max_steps,
+            # 重试沿用原始任务的脱敏身份快照，而不是把当前 API Key 送进消息队列。
+            principal=SecurityPrincipal.from_snapshot(principal_snapshot),
         )
     elif existing_task.task_type == "knowledge_contextual_index":
         version_id, context_model, context_max_tokens = get_contextual_index_retry_parameters(
@@ -1864,8 +2043,12 @@ def stream_chat(request_body: ChatRequest, request: Request) -> StreamingRespons
 def stream_session_chat(
     request_body: SessionStreamChatRequest,
     request: Request,
+    db: Session = Depends(get_db),
 ) -> StreamingResponse:
     trace_id = request.state.trace_id
+
+    # StreamingResponse 返回后会进入独立生成器，必须在启动流之前完成会话归属校验。
+    get_authorized_session(db, request, request_body.session_id)
 
     # SSE 接口返回的是事件流，不适合包一层统一 ApiResponse。
     return StreamingResponse(

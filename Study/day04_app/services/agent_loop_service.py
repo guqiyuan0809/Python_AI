@@ -29,6 +29,7 @@ from day04_app.services.tool_calling_service import (
     execute_registered_tool,
     list_available_tools,
 )
+from day04_app.security.principal import SecurityPrincipal
 from settings import settings
 
 
@@ -371,6 +372,7 @@ def run_agent_loop(
     run_id: str | None = None,
     sample_id: str | None = None,
     decision_prompt=None,
+    principal: SecurityPrincipal | None = None,
 ) -> AgentLoopResponse:
     start_time = time.perf_counter()
     steps: list[AgentLoopStepItem] = []
@@ -587,7 +589,11 @@ def run_agent_loop(
             )
             try:
                 tool_start_time = time.perf_counter()
-                raw_observation = execute_registered_tool(db, tool_decision)
+                raw_observation = execute_registered_tool(
+                    db,
+                    tool_decision,
+                    principal=principal,
+                )
                 observation = _normalize_tool_observation(
                     tool_name=decision.tool_name,
                     arguments=decision.arguments,

@@ -13,6 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from day04_app.common.exceptions import BusinessException, ModelCallException
+from day04_app.security.permissions import PERMISSION_TOOL_EXECUTE
+from day04_app.security.principal import SYSTEM_PRINCIPAL, SecurityPrincipal
 from day04_app.models import AiAsyncTask, AiStructuredResult, ChatSession, KnowledgeDocument
 from day04_app.schemas.chat_schema import (
     ToolCallDecisionItem,
@@ -113,8 +115,21 @@ class ToolPolicyChecker:
     课程阶段先用代码规则表达；企业中可以替换为数据库配置、配置中心或规则引擎。
     """
 
-    def check(self, tool: ToolDefinition, arguments: dict[str, Any]) -> ToolPolicyResult:
+    def check(
+        self,
+        tool: ToolDefinition,
+        arguments: dict[str, Any],
+        principal: SecurityPrincipal,
+    ) -> ToolPolicyResult:
         matched_rules: list[str] = []
+
+        # Service 层再次校验工具权限，避免未来非 HTTP 调用绕过 Router 的 RBAC。
+        if not principal.has_permissions(PERMISSION_TOOL_EXECUTE):
+            return ToolPolicyResult(
+                decision="block",
+                reason="当前调用者没有执行受控工具的权限",
+                matched_rules=["MISSING_TOOL_EXECUTE_PERMISSION"],
+            )
 
         if not tool.read_only:
             matched_rules.append("WRITE_TOOL_REQUIRE_CONFIRM")
@@ -375,7 +390,11 @@ def _parse_tool_decision(raw_text: str) -> ToolDecision:
     return decision
 
 
-def execute_registered_tool(db: Session, decision: ToolDecision) -> dict[str, Any] | None:
+def execute_registered_tool(
+    db: Session,
+    decision: ToolDecision,
+    principal: SecurityPrincipal | None = None,
+) -> dict[str, Any] | None:
     if not decision.need_tool:
         return None
     if decision.tool_name not in TOOL_REGISTRY:
@@ -383,7 +402,9 @@ def execute_registered_tool(db: Session, decision: ToolDecision) -> dict[str, An
     tool = TOOL_REGISTRY[decision.tool_name]
     # 执行工具前必须先过策略校验层。
     # 当前策略允许低风险只读工具自动执行；高风险或写操作工具返回 require_confirm，不直接执行。
-    policy_result = tool_policy_checker.check(tool, decision.arguments)
+    # Harness/Worker 内部调用没有 HTTP 请求时使用 system Principal；在线请求必须显式透传 Principal。
+    effective_principal = principal or SYSTEM_PRINCIPAL
+    policy_result = tool_policy_checker.check(tool, decision.arguments, effective_principal)
     if policy_result.decision != "allow":
         return {
             "tool_name": tool.name,
@@ -498,6 +519,7 @@ def answer_with_tool_calling(
     db: Session,
     message: str,
     trace_id: str | None = None,
+    principal: SecurityPrincipal | None = None,
 ) -> ToolCallingResponse:
     start_time = time.perf_counter()
     client = create_client(timeout=30.0)
@@ -518,7 +540,7 @@ def answer_with_tool_calling(
 
         # 如果模型判断需要工具，则后端执行真正的工具方法；如果不需要工具，则返回 None。
         # 模型不能直接访问数据库，真实查询只能通过这里的白名单工具完成。
-        tool_result = execute_registered_tool(db, decision)
+        tool_result = execute_registered_tool(db, decision, principal=principal)
 
         # 第二次调用模型：把“用户问题 + 工具执行结果”交给模型，生成最终给前端展示的自然语言回答。
         # 如果 tool_result 为 None，也会携带第一轮决策结果，避免模型误以为某个业务动作已经执行。

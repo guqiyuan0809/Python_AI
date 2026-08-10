@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     async_task_timeout_minutes: int = 10
     async_task_max_retries: int = 3
 
+    # 本地兼容模式默认关闭认证；启用后必须配置至少一个仅含 SHA-256 哈希的 API Key 身份。
+    security_enabled: bool = False
+    security_api_keys_json: str = "[]"
+    # 金汤令 Java 调用 Python 的服务间凭据；它不代表最终登录用户。
+    security_service_api_keys_json: str = "[]"
+
     # 原始知识库文件只允许落在服务端控制的目录，不能使用客户端传入的文件路径。
     knowledge_upload_dir: Path = PROJECT_ROOT / "data" / "knowledge_uploads"
     knowledge_upload_max_bytes: int = 20 * 1024 * 1024

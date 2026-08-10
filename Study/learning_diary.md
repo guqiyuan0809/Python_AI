@@ -646,3 +646,81 @@ Alembic revision `20260809_001` 将三份现有代码模板逐字初始化为数
 Prompt 模板渲染增加占位符契约：RAG 必须包含 `{context}`、`{question}`，Agent 必须包含 `{message}`、`{max_steps}`、`{tools}`、`{steps}`，修复 Prompt 必须包含 `{validation_error}`、`{raw_text}`。缺失或出现未声明占位符时运行时直接拒绝调用模型，避免错误模板静默消耗 Token。替换过程只扫描模板一次，业务输入中即使出现类似 `{question}` 的文本也不会被二次替换。
 
 Harness 也必须与运行时一致：Agent Harness 现在把数据库 Prompt ID、版本、哈希、完整模板、模型参数、工具清单和后端策略版本一起固定进运行快照，并把同一 Prompt 对象传给每条真实样本；工单 Harness 额外保存 Active 修复 Prompt 快照。这样评测报告描述的版本与实际执行的模型输入保持一致。
+
+## 2026-08-09：Day27 安全与权限（第一阶段）
+
+### 要解决的企业问题
+
+此前 ToolPolicyChecker 已能拦截高风险动作，但它不知道“谁在调用”。如果没有认证和授权，任何人都可能启动高成本评测、读取可观测日志、发布 Prompt、上传/激活知识库版本，甚至伪造请求体中的 `approved_by`。Day27 的目标是让 AI 服务具备最小可上线的身份边界，而不是重复实现 Agent Loop。
+
+### API Key Principal 与 RBAC
+
+新增 `day04_app/security/`：
+
+- `principal.py`：`SecurityPrincipal` 是当前调用者，类似 Spring Security 的 `Authentication`；包含 `actor_id`、`api_key_id`、角色和权限集合；
+- `permissions.py`：集中维护 `ai:invoke`、`tool:execute`、`ai:eval:run`、`ai:prompt:publish`、`knowledge:read/write` 等权限及 `viewer/operator/admin` 映射；
+- `dependencies.py`：通过 `X-API-Key` 验证 API Key 的 SHA-256 哈希，并通过 `Depends(require_permissions(...))` 做路由授权，等价于 Spring 的认证过滤器加 `@PreAuthorize`；
+- `settings.py`：新增 `SECURITY_ENABLED` 与 `SECURITY_API_KEYS_JSON`。配置只保存 `key_id`、`actor_id`、角色和 `key_hash`，绝不保存/打印原始 Key。
+
+默认 `SECURITY_ENABLED=false`，因此旧课程接口不会突然失效；真实环境必须设为 `true`。当开关开启但凭据配置为空或格式错误时，应用启动立即失败，防止“以为开启了认证、实际全放行”。
+
+角色边界：
+
+| 角色 | 主要能力 |
+| --- | --- |
+| `viewer` | 发起普通 AI 调用、读取知识库，不可读取运维日志、不可评测/发布/执行工具 |
+| `operator` | 额外可执行受控工具、运行评测、操作任务和知识库写入 |
+| `admin` | 全部权限，包括 Prompt 发布/回滚与安全审计查询 |
+
+受保护的路由使用真实 HTTP 语义：缺少或无效 Key 返回 `401/40101`，认证成功但权限不足返回 `403/40301`。`/health` 保持公开，避免负载均衡健康检查被认证误拦截。
+
+### 安全审计与身份防伪
+
+Alembic revision `20260809_002` 已执行到数据库 head，新表 `ai_security_audit_log` 记录 allow/deny、trace_id、actor、角色快照、所需权限、方法、路径、资源类型/ID 和原因码。它不保存 API Key、Key Hash、查询参数、请求正文、Prompt 或工具参数值。
+
+新增查询接口：
+
+```http
+GET /api/chat/security-audits?page=1&page_size=20&trace_id=&actor_id=&permission=&decision=
+```
+
+该接口要求 `ai:security:audit:read`（目前只由 admin 获得），避免普通运维角色查看其他人的拒绝记录。
+
+Prompt 发布、Prompt 回滚和知识库版本激活不再信任请求体中的 `approved_by`、`rolled_back_by`、`activated_by`。这些字段仅保留为兼容输入，服务端永远使用 `request.state.principal.actor_id` 写入业务审计；这与 Java 服务端从 `SecurityContextHolder` 读取当前用户的做法一致。
+
+### Agent 双重安全门与异步传播
+
+`/api/chat/tool-calling`、`/api/chat/agent-loop` 和 `/api/chat/agent-loop/async` 都要求 `tool:execute`。同时 `ToolPolicyChecker.check` 还接收 Principal 再次校验该权限，防止未来从 Service 层调用时绕过 Router。
+
+这并不替代原有高风险策略：`close_work_order_demo` 即使由拥有 `tool:execute` 的 operator 调用，仍会得到 `require_confirm`，不会自动执行。安全链路因此是：
+
+```text
+API Key 认证 -> RBAC tool:execute -> Agent/Tool 白名单 -> ToolPolicyChecker -> 高风险人工确认
+```
+
+异步 Agent 的 Outbox payload 只保存 Principal 脱敏快照（actor、key_id、角色、权限），绝不保存 API Key 原文或哈希；Worker 和自动重试都使用这一原始快照，避免重试时悄悄突破原任务的授权范围。
+
+### 已完成验证
+
+- `alembic current`：`20260809_002 (head)`；
+- `ai_security_audit_log` 表、全部字段和 5 个索引均存在；
+- 全项目 69 个 Python 模块 AST 解析通过；
+- `scripts/day27_security_smoke_test.py` 通过，且不调用 Chat、Embedding 或 Reranker：
+  - 无 Key -> HTTP 401；
+  - viewer 访问 Prompt 运维接口 -> HTTP 403；
+  - admin 访问同一接口 -> HTTP 200；
+  - 拒绝决定可被 admin 从安全审计接口查询；
+  - operator 拥有工具权限时，高风险关闭工单仍是 `require_confirm`。
+
+### Day27 第二阶段：金汤令 Java 可信代理身份契约
+
+Day27 第一阶段的 `X-API-Key -> 固定 actor/roles` 是用于隔离 Python AI 模块的教学版认证方式，不能替代金汤令的登录 Token。金汤令已经在 Java Filter 中完成 Token、会话和 URI/HTTP Method 权限校验，因此真正接入时，浏览器不应直接访问 Python，也不应把浏览器 Token 转发给 Python。
+
+Python 新增两种受控认证模式：
+
+- **本地直连模式**：继续使用 `X-API-Key`，一个 Key 映射一个固定调用者，仅保留给课程测试或没有 Java 网关的受控调用；
+- **Java 可信代理模式**：Java 使用只属于后端的 `X-Service-API-Key` 证明调用来源，再传递 `X-AI-Actor-Id`、`X-AI-Roles`、可选的 `X-AI-Permissions` 和 `X-AI-Data-Scope`。Python 只接受通过服务 Key 验证后的用户上下文。
+
+`X-AI-Roles` 和 `X-AI-Permissions` 都会校验为 Python 已登记的 AI 角色/权限白名单；未携带 `X-Service-API-Key` 而试图提交这些头会返回 401，并写入 `UNTRUSTED_PRINCIPAL_HEADERS` 审计。这避免浏览器伪造 `admin` 身份。`X-AI-Data-Scope` 必须是最多 4096 字符的 JSON 对象，例如 `{ "park_ids": ["PARK_001"] }`；当前先随 Principal 透传至异步 Outbox 快照，后续金汤令业务工具接入时再实际用于 SQL 查询条件，且不写入授权审计，避免无意义扩散业务范围数据。
+
+服务间 Key 配置为 `SECURITY_SERVICE_API_KEYS_JSON`，每项只包含 `key_id`、`key_hash` 和 `service_id`，原始 Key 不进入 Git、不由浏览器持有。`ai_security_audit_log.api_key_id` 保持历史字段名兼容：直连模式记录调用者 Key ID，Java 代理模式记录服务 Key ID；最终用户仍记录到 `actor_id`，并保留角色快照和 allow/deny 决策。

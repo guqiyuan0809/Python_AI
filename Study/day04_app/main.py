@@ -14,6 +14,7 @@ from day04_app.middlewares import register_middlewares
 from day04_app.routers.chat_router import router as chat_router
 from day04_app.routers.knowledge_router import router as knowledge_router
 from day04_app.routers.system_router import router as system_router
+from day04_app.security.dependencies import validate_security_configuration
 from settings import settings
 
 
@@ -32,6 +33,7 @@ register_exception_handlers(app)
 def startup_check() -> None:
     if not settings.dashscope_api_key:
         raise ValueError("没有读取到通义千问 API Key，请检查 Study/.env")
+    validate_security_configuration()
     # 学习阶段自动创建缺失的数据表；企业项目通常使用 Alembic/Flyway 管理表结构变更。
     Base.metadata.create_all(bind=engine)
 
