@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     app_name: str = "day04-ai-service"
     app_host: str = "127.0.0.1"
     app_port: int = 8000
+    # dev 允许热重载；生产/测试等部署环境必须显式关闭 reload。
+    app_env: str = "dev"
+    # 生产环境由 Alembic 管理表结构，不在 Web 进程启动时隐式建表。
+    auto_create_tables: bool = True
 
     dashscope_api_key: str
     dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -77,6 +81,10 @@ class Settings(BaseSettings):
     def celery_broker(self) -> str:
         # 没有单独配置时，开发环境默认使用 RabbitMQ，贴近 Java 企业 MQ 场景。
         return self.celery_broker_url or self.rabbitmq_url
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env.strip().lower() in {"prod", "production"}
 
     model_config = SettingsConfigDict(
         env_file=ENV_PATH,

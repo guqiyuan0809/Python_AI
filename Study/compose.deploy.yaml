@@ -1,0 +1,94 @@
+services:
+  ai-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: python-ai-service:day28
+    container_name: python-ai-api
+    env_file:
+      - .env
+    environment:
+      APP_HOST: 0.0.0.0
+      APP_ENV: production
+      AUTO_CREATE_TABLES: "false"
+      # Docker Desktop 访问 Windows 宿主机 MySQL 的专用地址；云端部署时通过
+      # DOCKER_DB_HOST 指向 RDS 私网地址或数据库容器服务名，不能继续使用 localhost。
+      DB_HOST: ${DOCKER_DB_HOST:-host.docker.internal}
+      # 容器内必须使用 Compose 服务名，不能使用宿主机 localhost。
+      RABBITMQ_URL: amqp://python_ai:python_ai_123@rabbitmq:5672//
+      CELERY_BROKER_URL: amqp://python_ai:python_ai_123@rabbitmq:5672//
+      MILVUS_HOST: milvus
+    command: ["uvicorn", "day04_app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      # Python 只供宿主机上的 Java 后端调用，不能作为前端或公网入口。
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ai_knowledge_uploads:/app/data/knowledge_uploads
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      milvus:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  ai-worker:
+    image: python-ai-service:day28
+    container_name: python-ai-worker
+    env_file:
+      - .env
+    environment:
+      APP_ENV: production
+      AUTO_CREATE_TABLES: "false"
+      DB_HOST: ${DOCKER_DB_HOST:-host.docker.internal}
+      RABBITMQ_URL: amqp://python_ai:python_ai_123@rabbitmq:5672//
+      CELERY_BROKER_URL: amqp://python_ai:python_ai_123@rabbitmq:5672//
+      MILVUS_HOST: milvus
+    command: ["celery", "-A", "day04_app.celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
+    volumes:
+      - ai_knowledge_uploads:/app/data/knowledge_uploads
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      milvus:
+        condition: service_started
+
+  ai-beat:
+    image: python-ai-service:day28
+    container_name: python-ai-beat
+    env_file:
+      - .env
+    environment:
+      APP_ENV: production
+      AUTO_CREATE_TABLES: "false"
+      DB_HOST: ${DOCKER_DB_HOST:-host.docker.internal}
+      RABBITMQ_URL: amqp://python_ai:python_ai_123@rabbitmq:5672//
+      CELERY_BROKER_URL: amqp://python_ai:python_ai_123@rabbitmq:5672//
+    command: ["celery", "-A", "day04_app.celery_app:celery_app", "beat", "--loglevel=INFO", "--schedule=/var/lib/celery/celerybeat-schedule"]
+    volumes:
+      - celerybeat_data:/var/lib/celery
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: python-ai-nginx
+    ports:
+      # 本机 80 已被其他项目使用；Day29 用 8088 模拟生产的 80/443 统一入口。
+      - "8088:80"
+    volumes:
+      # 当前教学前端已构建的静态产物；正式前端发布时应由独立前端镜像或制品仓库提供。
+      - ../ai-task-web/dist:/usr/share/nginx/html:ro
+      - ./deploy/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      ai-api:
+        condition: service_healthy
+
+volumes:
+  ai_knowledge_uploads:
+  celerybeat_data:

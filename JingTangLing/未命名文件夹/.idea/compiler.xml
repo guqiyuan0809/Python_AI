@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="CompilerConfiguration">
+    <option name="BUILD_PROCESS_HEAP_SIZE" value="2048" />
+    <annotationProcessing>
+      <profile default="true" name="Default" enabled="true" />
+      <profile name="Maven default annotation processors profile" enabled="true">
+        <sourceOutputDir name="target/generated-sources/annotations" />
+        <sourceTestOutputDir name="target/generated-test-sources/test-annotations" />
+        <outputRelativeToContentRoot value="true" />
+        <module name="jintangling-ledger" />
+        <module name="jintangling-iam" />
+        <module name="jintangling-common-share" />
+        <module name="jintangling-iam-share" />
+        <module name="jintangling-ledger-share" />
+        <module name="jintangling-framework" />
+        <module name="jintangling-common" />
+        <module name="gateway" />
+      </profile>
+    </annotationProcessing>
+  </component>
+</project>

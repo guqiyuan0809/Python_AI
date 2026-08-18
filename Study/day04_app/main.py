@@ -34,8 +34,9 @@ def startup_check() -> None:
     if not settings.dashscope_api_key:
         raise ValueError("没有读取到通义千问 API Key，请检查 Study/.env")
     validate_security_configuration()
-    # 学习阶段自动创建缺失的数据表；企业项目通常使用 Alembic/Flyway 管理表结构变更。
-    Base.metadata.create_all(bind=engine)
+    # 本地学习可保留自动建表；部署环境必须先执行 Alembic，再关闭该兼容开关。
+    if settings.auto_create_tables:
+        Base.metadata.create_all(bind=engine)
 
 
 app.include_router(system_router)

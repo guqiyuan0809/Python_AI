@@ -1,5 +1,10 @@
 .env
+.git
+.gitignore
 __pycache__/
 *.pyc
 celerybeat-schedule*
 data/knowledge_uploads/
+evals/
+logs/
+.idea/

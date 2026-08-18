@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="VcsDirectoryMappings">
+    <mapping directory="$PROJECT_DIR$/../.." vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/jintangling-common" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/jintangling-common-share" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/jintangling-framework" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/jintangling-gateway" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/jintangling-iam" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/jintangling-iam-share" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/jintangling-ledger" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/jintangling-ledger-share" vcs="Git" />
+  </component>
+</project>

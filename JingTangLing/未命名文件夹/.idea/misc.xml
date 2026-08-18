@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ExternalStorageConfigurationManager" enabled="true" />
+  <component name="MavenProjectsManager">
+    <option name="originalFiles">
+      <list>
+        <option value="$PROJECT_DIR$/jintangling-iam/pom.xml" />
+        <option value="$PROJECT_DIR$/jintangling-common/pom.xml" />
+        <option value="$PROJECT_DIR$/jintangling-ledger/pom.xml" />
+        <option value="$PROJECT_DIR$/jintangling-gateway/pom.xml" />
+        <option value="$PROJECT_DIR$/jintangling-framework/pom.xml" />
+        <option value="$PROJECT_DIR$/jintangling-iam-share/pom.xml" />
+        <option value="$PROJECT_DIR$/jintangling-common-share/pom.xml" />
+        <option value="$PROJECT_DIR$/jintangling-ledger-share/pom.xml" />
+      </list>
+    </option>
+  </component>
+  <component name="ProjectRootManager" version="2" languageLevel="JDK_1_8" default="true" project-jdk-name="1.8" project-jdk-type="JavaSDK">
+    <output url="file://$PROJECT_DIR$/out" />
+  </component>
+</project>

@@ -724,3 +724,195 @@ Python 新增两种受控认证模式：
 `X-AI-Roles` 和 `X-AI-Permissions` 都会校验为 Python 已登记的 AI 角色/权限白名单；未携带 `X-Service-API-Key` 而试图提交这些头会返回 401，并写入 `UNTRUSTED_PRINCIPAL_HEADERS` 审计。这避免浏览器伪造 `admin` 身份。`X-AI-Data-Scope` 必须是最多 4096 字符的 JSON 对象，例如 `{ "park_ids": ["PARK_001"] }`；当前先随 Principal 透传至异步 Outbox 快照，后续金汤令业务工具接入时再实际用于 SQL 查询条件，且不写入授权审计，避免无意义扩散业务范围数据。
 
 服务间 Key 配置为 `SECURITY_SERVICE_API_KEYS_JSON`，每项只包含 `key_id`、`key_hash` 和 `service_id`，原始 Key 不进入 Git、不由浏览器持有。`ai_security_audit_log.api_key_id` 保持历史字段名兼容：直连模式记录调用者 Key ID，Java 代理模式记录服务 Key ID；最终用户仍记录到 `actor_id`，并保留角色快照和 allow/deny 决策。
+
+## 2026-08-17：Day28 部署准备（第一阶段：配置与健康探针）
+
+Day28 不要求立即购买云服务器，而是先把本地服务整理成可以交付给部署环境的运行单元。第一阶段完成运行契约：
+
+- `settings.py` 增加 `APP_ENV`。开发环境保留热重载，生产环境由 `is_production` 自动关闭 `reload`，避免多进程重复启动和文件监听带来的线上风险；
+- `run_day04.py` 使用该环境标识选择启动行为，后续容器或进程管理器可以复用同一入口；
+- `/health/live` 只判断进程是否存活，不访问外部依赖；`/health/ready` 只读执行 `SELECT 1` 检查 MySQL 是否可用；原 `/health` 保留兼容旧客户端；
+- 就绪失败返回 HTTP 503，供 Docker、Nginx 或负载均衡摘除实例；探针响应不包含 API Key、数据库密码或连接串。
+
+这对应 Spring Boot 的 `application-dev/prod` 配置和 Actuator liveness/readiness：存活解决“进程是否还在”，就绪解决“实例是否可以接收业务流量”。本阶段没有修改数据库结构，也没有替代 Alembic 迁移。
+
+### Day28 第二阶段：Docker 容器化
+
+新增 `Dockerfile`、`.dockerignore`、`compose.deploy.yaml` 和 `DAY28_DEPLOYMENT.md`。应用服务与现有 RabbitMQ/Milvus 基础设施分层编排：API、Celery Worker、Celery Beat 复用同一镜像，通过 Compose 服务名访问容器内依赖；`.env` 只作为运行时注入，不进入镜像。生产容器使用 `APP_ENV=production`、`AUTO_CREATE_TABLES=false`，先执行 Alembic，再启动 Web 进程，避免多个副本同时隐式建表。上传目录和 Beat 调度文件使用独立持久化卷。
+
+首次本机演练中，`/health/live` 为 200 而 `/health/ready` 为 503，定位为 `.env` 的 `DB_HOST=127.0.0.1` 在容器内指向 API 容器自身，而不是 Windows 上的 MySQL。部署 Compose 现使用 `DB_HOST=${DOCKER_DB_HOST:-host.docker.internal}`：Docker Desktop 默认访问宿主机数据库，云端改为 RDS 私网地址或数据库服务名。这说明 liveness/readiness 的区别不是形式：前者证明进程还活着，后者阻止未连接数据库的实例接收业务流量。
+
+### Day28 完整复习笔记：从本地代码到可部署服务
+
+#### 1. Day28 的目标与边界
+
+本天学习的是 **部署准备与本机生产演练**，不是购买云服务器，也不是已经完成公网正式发布。交付目标是让 Python AI 服务从“分别打开几个终端就能跑”变为“一套明确配置可以重复构建、启动、探活、排障”的运行单元。
+
+本天实际容器化的服务：
+
+```text
+ai-api     FastAPI HTTP 接口
+ai-worker  Celery Worker，消费 Agent/RAG 等异步任务
+ai-beat    Celery Beat，定时投递 Outbox 和超时扫描任务
+rabbitmq   消息 Broker
+milvus     向量数据库及其 etcd/minio 依赖
+mysql      当前复用宿主机 MySQL；云端可替换为 RDS 或 MySQL 容器
+```
+
+Java 类比：`Dockerfile` 类似把 Jar 运行时、JDK 与启动命令打成标准交付物；`compose.deploy.yaml` 类似一份开发/测试环境的服务编排清单；Alembic 的职责对应 Flyway。
+
+#### 2. 镜像、容器、网络与端口
+
+- **镜像（image）**：不可变的运行模板，包含 Python 版本、第三方依赖、业务代码和默认启动命令。本项目的镜像标签为 `python-ai-service:day28`；
+- **容器（container）**：镜像的一次运行实例。`ai-api`、`ai-worker`、`ai-beat` 使用同一镜像，但各自的启动命令不同；
+- **Docker Compose 网络**：同一 Compose 项目的容器可用服务名互相访问，例如 `rabbitmq:5672`、`milvus:19530`，无需暴露给浏览器；
+- **端口映射**：`8000:8000` 的左侧是宿主机端口，右侧是容器端口。浏览器/Apifox 访问宿主机 `8000`，请求才会进入 `ai-api`；
+- **持久化卷（volume）**：`ai_knowledge_uploads` 保存知识库上传文件，`celerybeat_data` 保存 Beat 调度状态。容器重建不应意味着这些运行数据被丢弃。
+
+容器不是“把服务器放进容器”，而是把某个服务的运行环境和启动方式封装为镜像；多个容器仍运行在同一台宿主机或集群节点上。
+
+#### 3. 配置分层与数据库迁移
+
+`settings.py` 通过环境变量统一加载配置，`APP_ENV` 用于表达运行环境：
+
+- `dev`：允许 `run_day04.py` 使用 Uvicorn 热重载，方便开发；
+- `production`：自动关闭 `reload`，避免文件监听、重启子进程等开发行为进入线上；
+- `AUTO_CREATE_TABLES=true`：仅兼容本地学习阶段的自动建表；
+- `AUTO_CREATE_TABLES=false`：部署环境必须先运行 Alembic，Web 容器启动时不隐式修改表结构。
+
+生产发布的数据库顺序必须是：
+
+```text
+拉取指定应用版本 -> alembic upgrade head -> 启动/更新 API、Worker、Beat -> readiness 检查
+```
+
+不能依赖 `Base.metadata.create_all()` 完成生产迁移，因为它不能表达字段重命名、数据回填、索引变更、回滚策略和审计记录。
+
+#### 4. 健康检查：Live 与 Ready 的区别
+
+```text
+GET /health/live   只判断 FastAPI 进程是否存活，不访问数据库
+GET /health/ready  只读执行 SELECT 1，确认 MySQL 可连接后才返回 200
+GET /health        兼容旧调用，等价于 live
+```
+
+`/health/live=200` 只说明进程没有死；`/health/ready=200` 才说明实例已经能够处理依赖数据库的业务请求。若 MySQL 不可用，`ready` 返回 HTTP `503`，Docker、Nginx 或负载均衡可暂不把流量转给这个实例。
+
+本次实战真实出现过 `live=200`、`ready=503`：本机 `.env` 的 `DB_HOST=127.0.0.1` 进入容器后代表 **容器自身**，不是 Windows 主机。Docker Desktop 使用 `host.docker.internal` 访问宿主机 MySQL；云端需要通过 `DOCKER_DB_HOST` 配置为 RDS 私网地址或 MySQL 服务名。
+
+#### 5. Dockerfile、Compose 与密钥边界
+
+`Dockerfile` 的关键顺序：
+
+```text
+python:3.11-slim 基础镜像
+-> 复制 requirements.txt 并安装依赖（便于缓存）
+-> 复制业务代码、Alembic 和脚本
+-> 默认用 uvicorn 监听 0.0.0.0:8000
+```
+
+`.dockerignore` 排除了 `.env`、Git 元数据、IDE 文件、上传文件、Beat 本地状态等不应进入镜像的内容。真实 API Key、数据库密码、服务间 Key 只通过运行时 `.env`、CI/CD 密钥变量或密钥管理系统注入，绝不能写进 Dockerfile、镜像层或 Git。
+
+`compose.yaml` 保留为基础设施编排；`compose.deploy.yaml` 只增加业务应用服务。两份文件以 `-f` 合并，避免将学习环境基础设施与应用发布逻辑混在一个越来越大的文件里。
+
+#### 6. 本机部署演练命令
+
+```powershell
+cd D:\Pythoncode\Study
+
+# 先启动 RabbitMQ 与 Milvus 基础设施
+docker compose -f compose.yaml up -d rabbitmq milvus-etcd milvus-minio milvus
+
+# 数据库迁移（真实部署中应由发布流水线单独执行）
+& D:\Pythoncode\.venv\Scripts\python.exe -m alembic upgrade head
+
+# 构建应用镜像并启动 API、Worker、Beat
+docker compose -f compose.yaml -f compose.deploy.yaml build ai-api
+docker compose -f compose.yaml -f compose.deploy.yaml up -d ai-api ai-worker ai-beat
+
+# 查看状态、健康检查和日志
+docker compose -f compose.yaml -f compose.deploy.yaml ps
+Invoke-RestMethod http://127.0.0.1:8000/health/live
+Invoke-RestMethod http://127.0.0.1:8000/health/ready
+docker compose -f compose.yaml -f compose.deploy.yaml logs -f ai-api
+docker compose -f compose.yaml -f compose.deploy.yaml logs -f ai-worker
+docker compose -f compose.yaml -f compose.deploy.yaml logs -f ai-beat
+```
+
+本次验收结果：`ai-api` 为 healthy，`/health/live` 与 `/health/ready` 返回 200，`database=UP`，Worker `celery inspect ping` 返回 `pong`，API/Worker/Beat 最近日志未出现异常模式。
+
+#### 7. 本次遇到的两个真实故障
+
+1. **Docker Hub 基础镜像拉取失败**：Docker Engine 无法连接 `auth.docker.io` 的 IPv6 地址，导致 `FROM python:3.11-slim` 失败，后续没有应用镜像，`up/ps/logs` 都没有应用容器可操作。Windows 主机访问 Docker Hub 正常，因此问题位于 Docker Desktop 的 IPv6/网络链路。将 Docker Desktop 网络调整为 IPv4 优先/过滤 IPv6 后成功构建。
+2. **容器数据库就绪失败**：容器错误使用 `127.0.0.1` 访问 MySQL。通过 `/health/ready` 返回 503 及时发现，改为 `host.docker.internal` 后恢复为 200。这是容器网络边界与健康探针价值的直接验证。
+
+历史遗留 `python-ai-redis` 被 Compose 标记为 orphan container，但未使用 `--remove-orphans` 删除，因为它不属于本次部署变更，不能擅自清理。
+
+#### 8. CI/CD 与企业发布流程
+
+CI（持续集成）负责证明代码可以进入可部署版本：
+
+```text
+功能分支提交/PR
+-> 语法检查、单元测试、冒烟测试、Agent/RAG 评测门禁
+-> 构建 Docker 镜像
+-> 推送企业私有镜像仓库
+```
+
+CD（持续交付/持续部署）负责把已经验证的 **指定镜像版本** 放到目标环境：
+
+```text
+人工审批或自动触发
+-> 服务器/平台拉取指定镜像 tag 或 digest
+-> Alembic/Flyway 升级
+-> 滚动启动容器
+-> live/ready 健康检查
+-> Nginx/负载均衡放量
+-> 监控与必要时回滚到上一镜像版本
+```
+
+Docker Hub 常用于拉取公开基础镜像；项目自身镜像通常由 CI 构建后推送到企业私有仓库。合并 `master/main` 不必然直接上线生产：有的企业自动发布测试环境，生产环境常保留人工批准的持续交付步骤。
+
+无 CI/CD 的手工发布仍遵循相同顺序，只是开发者或运维手动执行构建、上传、迁移、启动与验收命令；风险在于版本不可追溯、步骤容易遗漏和不同机器环境不一致。
+
+#### 9. 面试表达模板
+
+> 我把 FastAPI、Celery Worker 和 Celery Beat 做成同一个镜像的三个运行实例，Compose 负责和 RabbitMQ、Milvus 进行服务编排。生产环境关闭 reload 和自动建表，数据库变更由 Alembic 在发布前单独执行。接口区分 liveness 与 readiness：前者判断进程，后者用只读 SQL 校验 MySQL，避免未连接依赖的实例被转发业务流量。部署时遇到过 Docker Desktop IPv6 拉取基础镜像失败，以及容器内 localhost 无法访问宿主机 MySQL 的问题，分别通过网络策略和 host.docker.internal 解决。
+
+#### 10. Day28 完成度与下一步
+
+Day28 已完成：配置分层、健康探针、镜像构建、Compose 编排、持久化卷、本机生产演练与故障排查。未在本天完成：Nginx、HTTPS、真实公网服务器、私有镜像仓库和实际 CI/CD 平台流水线；这些属于后续 Day29 或项目加分项。
+
+## 2026-08-18：Day29 Nginx 与前端联调（第一阶段：访问边界）
+
+Day29 先解决“浏览器访问谁、谁能调用 Python”的边界问题，而不是直接把 Python `8000` 暴露给前端。当前已有 Vue 前端 `ai-task-web`，它以相对路径 `/python-ai` 调 Java 代理；Java 在本地校验登录态和权限、构造可信身份头后才调用 Python。
+
+新增 `deploy/nginx/default.conf`，由 `compose.deploy.yaml` 的 `nginx` 服务加载：
+
+```text
+浏览器 -> Nginx:8088 -> /python-ai/ -> Java:9090 -> Python:127.0.0.1:8000
+```
+
+- Nginx 直接托管 Vue 的 `dist` 静态资源，并用 `try_files ... /index.html` 支持前端路由；
+- `/python-ai/` 只反向代理 Java，透传 Host、客户端 IP、协议和 `X-Trace-Id`；Java SSE 代理关闭缓冲并延长读写超时；
+- 不配置 `/ai/` 或 `/api/chat/` 直达 Python 的路由，防止浏览器绕过 Java 登录态校验和 Day27 的可信身份传递；
+- Python Compose 端口由 `8000:8000` 收紧为 `127.0.0.1:8000:8000`。本机 Java 仍可调用，但局域网和公网无法直接连接 Python；
+- 由于本机 `80` 已被其他项目占用，教学 Nginx 映射到 `8088`。服务器正式部署时通常只将 Nginx 的 `80/443` 暴露给外部。
+
+本机验收：`http://127.0.0.1:8088/` 已由 Nginx 返回 Vue 静态首页；Python 监听确认收紧到 `127.0.0.1:8000`。当 Java `9090` 未启动时，请求 `POST /python-ai/agent-loop` 返回 Nginx `502`，日志明确显示 `host.docker.internal:9090 connection refused`。这证明 Nginx 已将请求送往 Java 而非错误直通 Python；启动 Java 后，同一地址即可完成浏览器 -> Nginx -> Java -> Python 的端到端联调。
+
+### Day29 第二阶段：异步前端闭环与 Trace 联调
+
+已有 Vue 页面最初要求手填 `sessionId`，且提交异步任务后只显示初始 `taskId`。安全模式下，这会导致用户误填其他人的会话并被 Python 的 `get_session_for_actor` 以 403 拒绝；这不是服务异常，而是会话横向越权保护真实生效。
+
+前端现改为：首次提交自动经 Java `POST /python-ai/sessions` 创建归属当前登录用户的会话；随后提交 `POST /python-ai/sessions/chat/async`，并每 1.5 秒调用 Java `GET /python-ai/tasks/{taskId}`，直到 `success/error` 或 `finished=true` 后停止。页面展示 `taskId`、`traceId`、模型、Token、耗时、最终回答或错误信息。轮询在页面离开、Token 清除或新任务提交时取消，避免旧响应覆盖新任务状态。
+
+真实联调任务 `task_id=347978300129284096` 对应 `trace_id=dc9c64ffc0d64ddeb390dd25763a663d`：Nginx 记录前端请求，Python 安全审计记录 Java 服务身份 `park-platform-java-local` 与 `actor_id=672` 的 `ai:invoke=allow`，异步任务最终为 `success`，Worker 使用 `qwen-plus` 完成回答并写入消息、任务和调用日志。ID 分工为：`trace_id` 串联一次请求链路，`task_id` 标识异步任务，`session_id` 标识多轮会话，`message_id` 标识单条消息。
+
+### Day29 最终验收：自动建会话与异步轮询真实闭环
+
+前端不携带 `sessionId` 提交问题时，已验证会自动通过 Java 创建一个归属当前登录用户的 Python 会话，再提交异步聊天任务、由 Worker 执行并由前端轮询最终状态。该验证确认浏览器没有直接调用 Python，且会话归属、Java 可信代理身份头、Python RBAC、Outbox、RabbitMQ、Worker 和状态查询均在同一条真实链路中生效。
+
+联调中出现过“数据库任务为 success，而页面显示 error”。排查不是任务执行太慢：Python API 日志显示前端请求了 `/api/chat/tasks/undefined`，Worker 实际已成功执行 `task_id=348003351020965888`。根因是 Python 使用 snake_case（`session_id`、`task_id`），而 Java/Vue 对外契约使用 camelCase（`sessionId`、`taskId`）；Java DTO 若用 `@JsonProperty`，会把 snake_case 又序列化给浏览器，导致 Vue 读取到 `undefined`。现改为 `@JsonAlias`：仅用于接收 Python 的 snake_case，Java 响应仍输出 camelCase。重新构建并重启 Java 后，页面已成功轮询到真实任务结果。
+
+Day29 至此完成：Nginx 统一入口、前端静态站点、Java 身份与权限边界、Python AI 服务、异步任务和前端状态轮询已经端到端验证。Day30 的复盘文档见 `DAY30_PROJECT_REVIEW.md`，用于进入金汤令 AI 能力改造前的项目盘点。

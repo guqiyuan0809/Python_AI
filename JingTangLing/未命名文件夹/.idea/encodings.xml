@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="Encoding">
+    <file url="file://$PROJECT_DIR$/jintangling-common-share/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/jintangling-common-share/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/jintangling-common/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/jintangling-common/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/jintangling-framework/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/jintangling-framework/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/jintangling-gateway/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/jintangling-gateway/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/jintangling-iam-share/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/jintangling-iam-share/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/jintangling-iam/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/jintangling-iam/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/jintangling-ledger-share/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/jintangling-ledger-share/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/jintangling-ledger/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/jintangling-ledger/src/main/resources" charset="UTF-8" />
+  </component>
+</project>
