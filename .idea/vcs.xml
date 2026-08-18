@@ -2,5 +2,13 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="$PROJECT_DIR$" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/JingTangLing/未命名文件夹/jintangling-common" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/JingTangLing/未命名文件夹/jintangling-common-share" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/JingTangLing/未命名文件夹/jintangling-framework" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/JingTangLing/未命名文件夹/jintangling-gateway" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/JingTangLing/未命名文件夹/jintangling-iam" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/JingTangLing/未命名文件夹/jintangling-iam-share" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/JingTangLing/未命名文件夹/jintangling-ledger" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/JingTangLing/未命名文件夹/jintangling-ledger-share" vcs="Git" />
   </component>
 </project>

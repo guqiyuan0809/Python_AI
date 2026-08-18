@@ -9,7 +9,7 @@ from uuid import uuid4
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from day04_app.common.exceptions import BusinessException
+from day04_app.common.exceptions import AuthorizationException, BusinessException
 from day04_app.models import ChatMessage, ChatSession, ChatSessionSummary
 from settings import settings
 
@@ -42,6 +42,18 @@ def get_session(db: Session, session_id: str) -> ChatSession:
     chat_session = db.scalars(statement).first()
     if chat_session is None:
         raise BusinessException(code=40004, message="会话不存在")
+    return chat_session
+
+
+def get_session_for_actor(
+    db: Session,
+    session_id: str,
+    actor_id: str,
+) -> ChatSession:
+    """读取会话并校验归属，避免只凭 session_id 横向访问其他用户的数据。"""
+    chat_session = get_session(db, session_id)
+    if chat_session.user_id != actor_id:
+        raise AuthorizationException("当前用户无权访问该会话")
     return chat_session
 
 
