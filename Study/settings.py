@@ -41,8 +41,32 @@ class Settings(BaseSettings):
     milvus_port: int = 19530
     # v2 增加 version_id 过滤字段；旧的空 Collection 保留，避免开发环境直接破坏性删除。
     milvus_collection_name: str = "knowledge_chunk_vectors_v2"
+    # 会话记忆与企业知识库必须物理隔离：前者含用户/会话数据，不能混进法规等共享资料。
+    session_memory_collection_name: str = "session_memory_vectors_v1"
     # RAG 无答案拒答阈值：Top1 分数低于该值时不调用聊天模型，直接返回依据不足。
     rag_min_relevance_score: float | None = 0.25
+
+    # Day32：记忆预算。摘要减少上下文，不会放宽 Agent 的 max_steps 硬上限。
+    # 触发阈值和保留窗口分别配置，便于根据模型上下文、Prompt/RAG 预算和监控数据调优。
+    session_summary_trigger_turns: int = 16
+    session_summary_keep_recent_turns: int = 6
+    session_summary_trigger_tokens: int = 3500
+    agent_working_memory_trigger_steps: int = 6
+    agent_working_memory_keep_recent_steps: int = 2
+    agent_working_memory_trigger_tokens: int = 1600
+    # 绝对执行上限：摘要永远不能把一次请求变成无限循环。
+    agent_loop_max_steps_hard_limit: int = 10
+    # 当前先把“最新 active 会话摘要”作为一条向量记忆 upsert；历史摘要版本只留 MySQL 审计，
+    # 不重复写入 Milvus。后续再增加 preference/constraint/business_fact 的精细提炼。
+    session_memory_index_active_summary: bool = True
+    # 在线上下文只能使用有限数量的长期记忆，并与 RAG/系统 Prompt 共同受预算约束。
+    # 这是“召回候选上限”，不是允许把全部历史重新塞回模型的开关。
+    session_memory_retrieval_top_k: int = 3
+    session_memory_context_max_tokens: int = 600
+    # LangGraph 候选 Agent 的节点级重试。max_attempts 包含首次调用，因此 2 表示“首次 + 1 次重试”。
+    # 只允许模型节点和低风险只读工具节点使用；写操作、高风险工具永不自动重试。
+    langgraph_model_max_attempts: int = 2
+    langgraph_read_tool_max_attempts: int = 2
 
     db_host: str = "127.0.0.1"
     db_port: int = 3306

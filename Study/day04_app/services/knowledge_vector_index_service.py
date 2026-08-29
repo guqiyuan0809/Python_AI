@@ -7,12 +7,11 @@ from sqlalchemy.orm import Session
 
 from day04_app.common.exceptions import BusinessException
 from day04_app.models import KnowledgeDocument, KnowledgeDocumentChunk, KnowledgeDocumentVersion
-from day04_app.services.knowledge_embedding_service import generate_text_embeddings
+from day04_app.services.llamaindex_ingestion_service import index_chunks_with_llamaindex
 from day04_app.services.milvus_vector_store_service import (
     EMBEDDING_DIMENSION,
     count_vectors_by_version,
     ensure_knowledge_chunk_collection,
-    upsert_chunk_vectors,
 )
 from settings import settings
 
@@ -46,7 +45,13 @@ def build_version_vector_index(
     db: Session,
     version_id: str,
 ) -> KnowledgeDocumentVersion:
-    """批量生成指定版本所有 chunk 的 Embedding 并写入 Milvus，不切换 active 指针。"""
+    """批量生成指定版本所有 chunk 的 Embedding 并写入 Milvus，不切换 active 指针。
+
+    Day31 的框架替换点是 ``IngestionPipeline``：旧实现手写批量 Embedding、再用 ``zip``
+    组装 Milvus records；现在 LlamaIndex 把 Node 转换、Embedding Transform 与
+    VectorStore.add 编排为一条离线管道。Collection 契约、版本状态和数量校验仍在本服务，
+    因为它们属于企业数据发布治理，而不是框架的默认职责。
+    """
     version = _find_version(db, version_id)
     if version.status not in {VERSION_STATUS_CHUNKED, VERSION_STATUS_INDEXED, VERSION_STATUS_ERROR}:
         raise BusinessException(
@@ -73,26 +78,21 @@ def build_version_vector_index(
     try:
         # 先校验 Collection 契约，避免调完模型才发现维度或字段错误。
         ensure_knowledge_chunk_collection()
-        model, vectors = generate_text_embeddings(
-            # 父子上下文化版本向量化的是“背景说明 + 原文”；历史版本保持 content，兼容已有索引。
-            [chunk.embedding_text or chunk.content for chunk in chunks],
-            batch_size=VECTOR_UPSERT_BATCH_SIZE,
+        # legacy 对照（Day20，不再在正式路径执行）：
+        # model, vectors = generate_text_embeddings([...])
+        # records = [{"chunk_id": ..., "embedding": vector} for ...]
+        # upsert_chunk_vectors(records=records)
+        #
+        # LlamaIndex Pipeline 完成的是 Node → Embedding → VectorStore.add；VectorStore
+        # 内部仍调用项目 upsert 服务，保证 version_id 与既有 Milvus schema 不被绕过。
+        model, written_node_ids = index_chunks_with_llamaindex(
+            document_id=version.document_id,
+            version_id=version.version_id,
+            chunks=chunks,
+            embedding_batch_size=VECTOR_UPSERT_BATCH_SIZE,
         )
-        if len(vectors) != len(chunks):
-            raise ValueError("Embedding 向量数量与 chunk 数量不一致")
-        if any(len(vector) != EMBEDDING_DIMENSION for vector in vectors):
-            raise ValueError(f"Embedding 向量维度不是 {EMBEDDING_DIMENSION}")
-
-        records = [
-            {
-                "chunk_id": chunk.chunk_id,
-                "document_id": chunk.document_id,
-                "version_id": chunk.version_id,
-                "embedding": vector,
-            }
-            for chunk, vector in zip(chunks, vectors, strict=True)
-        ]
-        upsert_chunk_vectors(records=records)
+        if len(written_node_ids) != len(chunks):
+            raise ValueError("LlamaIndex 实际写入节点数与当前版本 chunk 数量不一致")
         indexed_vector_count = count_vectors_by_version(version.version_id)
         if indexed_vector_count != len(chunks):
             raise ValueError(

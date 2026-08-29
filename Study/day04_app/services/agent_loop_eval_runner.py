@@ -22,6 +22,7 @@ from day04_app.schemas.chat_schema import AgentLoopResponse
 from day04_app.services.agent_loop_service import (
     AGENT_DECISION_POLICY_VERSION,
     get_active_agent_decision_prompt,
+    run_langchain_agent_loop,
     run_agent_loop,
 )
 from day04_app.services.prompt_observability_service import build_registry_prompt_identity
@@ -45,7 +46,11 @@ def _count_accuracy(rows: list[dict[str, Any]], matched_field: str, expected_fie
     return round(sum(row[matched_field] for row in rows) / expected_count, 4)
 
 
-def _build_agent_snapshot(prompt) -> tuple[dict[str, Any], str]:
+def _build_agent_snapshot(
+    prompt,
+    *,
+    decision_engine: str,
+) -> tuple[dict[str, Any], str]:
     prompt_identity = build_registry_prompt_identity(prompt)
     snapshot = {
         "prompt_id": prompt_identity.prompt_id,
@@ -58,6 +63,7 @@ def _build_agent_snapshot(prompt) -> tuple[dict[str, Any], str]:
         "temperature": prompt.temperature,
         "max_tokens": prompt.max_tokens,
         "decision_policy_version": AGENT_DECISION_POLICY_VERSION,
+        "decision_engine": decision_engine,
         "available_tools": [tool.model_dump() for tool in list_available_tools()],
     }
     snapshot_json = json.dumps(snapshot, ensure_ascii=False, sort_keys=True)
@@ -214,7 +220,7 @@ def _run_one_sample(
             "max_steps": int(expected.get("max_steps", 3)),
             "trace_id": trace_id or f"agent_eval_{sample.sample_id}",
         }
-        if agent_runner is run_agent_loop:
+        if agent_runner in {run_agent_loop, run_langchain_agent_loop}:
             # 替身 Agent 只需维持 Day25 既有四参数契约；真实 Agent 才写 Day26 分步日志。
             runner_arguments.update(
                 task_id=task_id,
@@ -263,7 +269,15 @@ def run_agent_loop_eval(
     finally:
         db.close()
 
-    agent_snapshot, agent_snapshot_hash = _build_agent_snapshot(decision_prompt)
+    decision_engine = (
+        "langchain_runnable_v1"
+        if agent_runner is run_langchain_agent_loop
+        else "native"
+    )
+    agent_snapshot, agent_snapshot_hash = _build_agent_snapshot(
+        decision_prompt,
+        decision_engine=decision_engine,
+    )
     run_id = f"agent_eval_{datetime.now(CHINA_TZ).strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
     rows = [
         _run_one_sample(

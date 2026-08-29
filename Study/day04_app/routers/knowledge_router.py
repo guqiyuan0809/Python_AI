@@ -21,6 +21,12 @@ from day04_app.schemas.knowledge_schema import (
     InMemoryChunkSearchResponse,
     MilvusChunkSearchRequest,
     MilvusChunkSearchResponse,
+    LlamaIndexLawRetrievalRequest,
+    LlamaIndexLawRetrievalResponse,
+    LlamaIndexLawSourceNode,
+    LlamaIndexChunkPreviewRequest,
+    LlamaIndexChunkPreviewResponse,
+    LlamaIndexChunkPreviewNode,
     DocumentVersionChunkSearchResponse,
     CreateRetrievalEvalDatasetRequest,
     CreateRetrievalEvalSampleRequest,
@@ -40,6 +46,10 @@ from day04_app.schemas.knowledge_schema import (
     RagContextPreviewResponse,
     RagAnswerRequest,
     RagAnswerResponse,
+    MultiDocumentRagRequest,
+    MultiDocumentRagContextPreviewResponse,
+    MultiDocumentRagAnswerResponse,
+    LlamaIndexRagAnswerResponse,
     RagAnswerReferenceListResponse,
     AsyncRagTaskSubmitResponse,
     AsyncSessionRagTaskRequest,
@@ -59,12 +69,20 @@ from day04_app.services.knowledge_milvus_search_service import (
     search_active_document_chunks,
     search_document_version_chunks_for_validation,
 )
-from day04_app.services.rag_context_service import (
-    build_rag_context,
-    generate_rag_answer,
-    get_active_rag_answer_prompt,
-    get_rag_answer_prompt_identity,
+from day04_app.services.llamaindex_law_retrieval_service import (
+    retrieve_active_document_as_llamaindex_nodes,
 )
+from day04_app.services.llamaindex_rag_query_service import (
+    answer_active_document_with_llamaindex,
+    prepare_governed_llamaindex_rag,
+    preview_governed_llamaindex_context,
+)
+from day04_app.services.llamaindex_multi_document_rag_service import (
+    KnowledgeDomain,
+    answer_multi_document_with_llamaindex,
+    preview_multi_document_llamaindex_context,
+)
+from day04_app.services.llamaindex_document_service import build_llamaindex_nodes_from_segments
 from day04_app.services.session_rag_service import (
     answer_session_with_rag,
     list_session_rag_answer_references,
@@ -126,6 +144,31 @@ def _resolve_rag_score_threshold(request_score_threshold: float | None) -> float
         if request_score_threshold is not None
         else settings.rag_min_relevance_score
     )
+
+
+def _to_multi_document_domains(request_body: MultiDocumentRagRequest) -> tuple[
+    list[KnowledgeDomain], dict[str, tuple[str, ...]]
+]:
+    """将 HTTP DTO 转成框架路由契约，不让 Router 自己产生 document_id。
+
+    当前是可观察的教学接口，因此传入的是“业务层已经准入的领域”；落地金汤令时
+    这个函数的上游应改为根据 Java 可信身份里的 tenant/park/enterprise 数据范围查询
+    ``knowledge_domain_document``，而不是直接使用前端请求中的 document_ids。
+    """
+
+    domains = [
+        KnowledgeDomain(
+            domain_id=domain.domain_id,
+            description=domain.description,
+            document_ids=tuple(domain.document_ids),
+        )
+        for domain in request_body.domains
+    ]
+    keywords = {
+        domain.domain_id: tuple(domain.keywords)
+        for domain in request_body.domains
+    }
+    return domains, keywords
 
 
 def _to_retrieval_eval_dataset_item(dataset) -> RetrievalEvalDatasetItem:
@@ -794,6 +837,165 @@ def search_document_chunks_by_milvus(
 
 
 @router.post(
+    "/documents/{document_id}/llamaindex-retrieval-preview",
+    response_model=ApiResponse[LlamaIndexLawRetrievalResponse],
+    summary="Day31：使用 LlamaIndex Retriever 预览法规知识节点",
+)
+def preview_llamaindex_law_retrieval(
+    document_id: str,
+    request_body: LlamaIndexLawRetrievalRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[LlamaIndexLawRetrievalResponse]:
+    """将现有 active 版本的 Milvus 命中适配为 LlamaIndex NodeWithScore。
+
+    此接口故意不调用聊天模型：先让你观察“框架节点”与现有 chunk、版本和来源如何一一对应。
+    """
+
+    start_time = time.perf_counter()
+    result = retrieve_active_document_as_llamaindex_nodes(
+        db,
+        document_id=document_id,
+        question=request_body.question,
+        top_k=request_body.top_k,
+        use_reranker=request_body.use_reranker,
+        rerank_top_n=request_body.rerank_top_n,
+        trace_id=request.state.trace_id,
+    )
+
+    create_call_log(
+        db,
+        call_type="llamaindex_law_rag",
+        stage="llamaindex_retrieval_adapter",
+        trace_id=request.state.trace_id,
+        model=result.embedding_model,
+        cost_ms=round((time.perf_counter() - start_time) * 1000),
+        detail={
+            "framework": "llamaindex",
+            "retrieval_backend": "project_milvus",
+            "document_id": document_id,
+            "version_id": result.active_version_id,
+            "node_count": len(result.nodes),
+            "use_reranker": request_body.use_reranker,
+            "rerank_top_n": request_body.rerank_top_n if request_body.use_reranker else None,
+        },
+    )
+    return success(
+        LlamaIndexLawRetrievalResponse(
+            document_id=document_id,
+            active_version_id=result.active_version_id,
+            embedding_model=result.embedding_model,
+            vector_dimension=result.vector_dimension,
+            node_count=len(result.nodes),
+            nodes=[
+                LlamaIndexLawSourceNode(
+                    node_id=node.node.node_id,
+                    document_id=str(node.node.metadata["document_id"]),
+                    version_id=str(node.node.metadata["version_id"]),
+                    chunk_index=int(node.node.metadata["chunk_index"]),
+                    parent_chunk_id=node.node.metadata.get("parent_chunk_id"),
+                    score=float(node.score or 0.0),
+                    vector_score=node.node.metadata.get("vector_score"),
+                    rerank_score=node.node.metadata.get("rerank_score"),
+                    content=node.node.get_content(),
+                    source_locations=list(node.node.metadata.get("source_locations") or []),
+                )
+                for node in result.nodes
+            ],
+        ),
+        message="LlamaIndex Retriever 节点转换完成；仍复用项目的 Milvus、版本与来源治理",
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.post(
+    "/documents/{document_id}/llamaindex-chunk-preview",
+    response_model=ApiResponse[LlamaIndexChunkPreviewResponse],
+    summary="Day31：使用 LlamaIndex SentenceSplitter 预览法规节点",
+)
+def preview_llamaindex_document_chunks(
+    document_id: str,
+    request_body: LlamaIndexChunkPreviewRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[LlamaIndexChunkPreviewResponse]:
+    """读取已有原始段，用 LlamaIndex 切块并返回元数据；不改变文档版本状态。"""
+
+    from sqlalchemy import select
+
+    from day04_app.models import KnowledgeDocumentSegment
+    from day04_app.schemas.knowledge_schema import ParsedDocumentSegment
+
+    segments = list(
+        db.scalars(
+            select(KnowledgeDocumentSegment)
+            .where(KnowledgeDocumentSegment.document_id == document_id)
+            .order_by(KnowledgeDocumentSegment.segment_index.asc())
+        )
+    )
+    if not segments:
+        from day04_app.common.exceptions import BusinessException
+
+        raise BusinessException(code=40067, message="文档尚未产生原始文本段，不能执行 LlamaIndex 切块预览")
+
+    result = build_llamaindex_nodes_from_segments(
+        document_id=document_id,
+        segments=[
+            ParsedDocumentSegment(
+                segment_index=segment.segment_index,
+                text=segment.content,
+                location=segment.location,
+            )
+            for segment in segments
+        ],
+        chunk_size=request_body.chunk_size,
+        chunk_overlap=request_body.chunk_overlap,
+    )
+    create_call_log(
+        db,
+        call_type="llamaindex_law_rag",
+        stage="llamaindex_document_split",
+        trace_id=request.state.trace_id,
+        cost_ms=0,
+        detail={
+            "framework": "llamaindex",
+            "document_id": document_id,
+            "source_segment_count": result.source_segment_count,
+            "node_count": len(result.nodes),
+            "chunk_size": result.chunk_size,
+            "chunk_overlap": result.chunk_overlap,
+            "persisted": False,
+        },
+    )
+    preview_nodes = result.nodes[:50]
+    return success(
+        LlamaIndexChunkPreviewResponse(
+            document_id=document_id,
+            source_segment_count=result.source_segment_count,
+            node_count=len(result.nodes),
+            chunk_size=result.chunk_size,
+            chunk_overlap=result.chunk_overlap,
+            nodes=[
+                LlamaIndexChunkPreviewNode(
+                    node_id=node.node_id,
+                    content=node.get_content(),
+                    document_id=str(node.metadata.get("document_id", document_id)),
+                    source_segment_index=(
+                        int(node.metadata["segment_index"])
+                        if node.metadata.get("segment_index") is not None
+                        else None
+                    ),
+                    source_location=node.metadata.get("source_location"),
+                    start_char_idx=node.start_char_idx,
+                    end_char_idx=node.end_char_idx,
+                )
+                for node in preview_nodes
+            ],
+        ),
+        message="LlamaIndex 文档节点切块预览完成，未修改 MySQL 或 Milvus",
+        trace_id=request.state.trace_id,
+    )
+@router.post(
     "/documents/{document_id}/versions/{version_id}/vector-search",
     response_model=ApiResponse[DocumentVersionChunkSearchResponse],
     summary="发布前验证指定文档版本的 Milvus 检索结果",
@@ -840,46 +1042,251 @@ def preview_rag_context(
     request: Request,
     db: Session = Depends(get_db),
 ) -> ApiResponse[RagContextPreviewResponse]:
+    """预览正式 LlamaIndex QueryEngine 在调用模型前会采用的资料节点。
+
+    这个接口故意不自己调用 ``search_active_document_chunks + build_rag_context``。
+    那样虽然能展示一份资料包，却可能和正式回答的父块去重、分数门禁、上下文预算
+    产生偏差。现在预览与正式回答共用 ``Retriever + NodePostprocessor``；区别仅是
+    预览在模型调用前停止，因此不会消耗聊天模型 Token，也不会写入回答记录。
+    """
+
     score_threshold = _resolve_rag_score_threshold(request_body.score_threshold)
-    model, vector_dimension, active_version_id, items = search_active_document_chunks(
+    preparation = prepare_governed_llamaindex_rag(
         db,
         document_id=document_id,
-        question=request_body.question,
-        top_k=request_body.retrieval_top_k,
+        retrieval_top_k=request_body.retrieval_top_k,
+        max_context_characters=request_body.max_context_characters,
         use_reranker=request_body.use_reranker,
         rerank_top_n=request_body.rerank_top_n,
-    )
-    context_result = build_rag_context(
-        items,
-        max_context_characters=request_body.max_context_characters,
         score_threshold=score_threshold,
+        trace_id=request.state.trace_id,
+    )
+    preview = preview_governed_llamaindex_context(
+        preparation,
+        question=request_body.question,
     )
     return success(
         RagContextPreviewResponse(
             document_id=document_id,
-            active_version_id=active_version_id,
-            embedding_model=model,
-            vector_dimension=vector_dimension,
-            retrieved_chunk_count=len(items),
-            included_chunk_count=len(context_result.references),
-            omitted_chunk_count=context_result.omitted_chunk_count,
+            active_version_id=preview.retrieval.active_version_id,
+            embedding_model=preview.retrieval.embedding_model,
+            vector_dimension=preview.retrieval.vector_dimension,
+            retrieved_chunk_count=len(preview.retrieval.nodes),
+            included_chunk_count=len(preview.references),
+            omitted_chunk_count=preview.omitted_node_count,
             top_score=(
-                round(context_result.top_score, 6)
-                if context_result.top_score is not None
+                round(preview.top_score, 6)
+                if preview.top_score is not None
                 else None
             ),
-            score_threshold=context_result.score_threshold,
-            rejected_by_score_threshold=context_result.rejected_by_score_threshold,
-            context_char_count=len(context_result.context),
+            score_threshold=preview.score_threshold,
+            rejected_by_score_threshold=preview.rejected_by_score_threshold,
+            context_char_count=len(preview.context),
             references=[
                 reference.model_copy(update={"score": round(reference.score, 6)})
-                for reference in context_result.references
+                for reference in preview.references
             ],
-            context=context_result.context,
+            context=preview.context,
         ),
-        message="RAG 资料包已组装完成，尚未调用聊天模型",
+        message="LlamaIndex RAG 资料节点已完成治理筛选，尚未调用聊天模型",
         trace_id=request.state.trace_id,
     )
+
+
+@router.post(
+    "/multi-document-rag-context-preview",
+    response_model=ApiResponse[MultiDocumentRagContextPreviewResponse],
+    summary="Day31：预览 LlamaIndex 多文档知识域路由与跨文档资料包",
+)
+def preview_multi_document_rag_context(
+    request_body: MultiDocumentRagRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[MultiDocumentRagContextPreviewResponse]:
+    """只执行路由、全局检索和资料治理，不调用聊天模型。
+
+    建议先调用本接口确认：问题被路由到了哪个业务领域、该领域允许哪些文档、每篇文档
+    使用哪个 active 版本、最终有哪些跨文档证据会进入 Prompt。只有这些事实合理时再调
+    正式回答接口，避免把“路由错误”误以为是模型回答质量问题。
+    """
+
+    domains, domain_keywords = _to_multi_document_domains(request_body)
+    start_time = time.perf_counter()
+    preview = preview_multi_document_llamaindex_context(
+        db,
+        domains=domains,
+        domain_keywords=domain_keywords,
+        default_domain_id=request_body.default_domain_id,
+        question=request_body.question,
+        retrieval_top_k=request_body.retrieval_top_k,
+        max_context_characters=request_body.max_context_characters,
+        use_reranker=request_body.use_reranker,
+        rerank_top_n=request_body.rerank_top_n,
+        score_threshold=_resolve_rag_score_threshold(request_body.score_threshold),
+        trace_id=request.state.trace_id,
+    )
+    create_call_log(
+        db,
+        call_type="multi_document_rag",
+        stage="llamaindex_knowledge_domain_route",
+        trace_id=request.state.trace_id,
+        cost_ms=round((time.perf_counter() - start_time) * 1000),
+        detail={
+            "framework": "llamaindex",
+            "orchestration": "RouterRetriever",
+            "selected_domain_id": preview.route.selected_domain_id,
+            "selected_document_count": len(preview.route.selected_document_ids),
+            "route_reason": preview.route.route_reason,
+            "active_version_by_document_id": preview.active_version_by_document_id,
+            "global_ranking": True,
+            # 不记原始问题和资料正文；这些可能属于园区/企业内部数据。
+        },
+    )
+    return success(
+        MultiDocumentRagContextPreviewResponse(
+            selected_domain_id=preview.route.selected_domain_id,
+            selected_document_ids=preview.route.selected_document_ids,
+            active_version_by_document_id=preview.active_version_by_document_id,
+            route_reason=preview.route.route_reason,
+            embedding_model=preview.preview.retrieval.embedding_model,
+            vector_dimension=preview.preview.retrieval.vector_dimension,
+            retrieved_chunk_count=len(preview.preview.retrieval.nodes),
+            included_chunk_count=len(preview.preview.references),
+            omitted_chunk_count=preview.preview.omitted_node_count,
+            top_score=(round(preview.preview.top_score, 6) if preview.preview.top_score is not None else None),
+            score_threshold=preview.preview.score_threshold,
+            rejected_by_score_threshold=preview.preview.rejected_by_score_threshold,
+            context_char_count=len(preview.preview.context),
+            references=[
+                reference.model_copy(update={"score": round(reference.score, 6)})
+                for reference in preview.preview.references
+            ],
+            context=preview.preview.context,
+        ),
+        message="LlamaIndex 已完成知识域路由和领域内跨文档全局召回，尚未调用聊天模型",
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.post(
+    "/multi-document-rag-answer",
+    response_model=ApiResponse[MultiDocumentRagAnswerResponse],
+    summary="Day31：通过 LlamaIndex 生成带跨文档引用的知识域 RAG 回答",
+)
+def answer_multi_document_rag(
+    request_body: MultiDocumentRagRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[MultiDocumentRagAnswerResponse]:
+    """正式多文档问答入口：领域路由后复用项目的 Prompt、引用校验和审计边界。"""
+
+    domains, domain_keywords = _to_multi_document_domains(request_body)
+    start_time = time.perf_counter()
+    try:
+        result = answer_multi_document_with_llamaindex(
+            db,
+            domains=domains,
+            domain_keywords=domain_keywords,
+            default_domain_id=request_body.default_domain_id,
+            question=request_body.question,
+            retrieval_top_k=request_body.retrieval_top_k,
+            max_context_characters=request_body.max_context_characters,
+            use_reranker=request_body.use_reranker,
+            rerank_top_n=request_body.rerank_top_n,
+            score_threshold=_resolve_rag_score_threshold(request_body.score_threshold),
+            trace_id=request.state.trace_id,
+        )
+        answer = result.answer_result
+        cost_ms = round((time.perf_counter() - start_time) * 1000)
+        create_call_log(
+            db,
+            call_type="multi_document_rag",
+            stage="llamaindex_knowledge_domain_route",
+            trace_id=request.state.trace_id,
+            cost_ms=0,
+            detail={
+                "framework": "llamaindex",
+                "orchestration": "RouterRetriever",
+                "selected_domain_id": result.route.selected_domain_id,
+                "selected_document_count": len(result.route.selected_document_ids),
+                "route_reason": result.route.route_reason,
+                "active_version_by_document_id": result.active_version_by_document_id,
+                "global_ranking": True,
+            },
+            commit=False,
+        )
+        # 无依据兜底不调用模型，不应伪造模型成本或 Prompt 使用记录。
+        if answer.model and answer.prompt_identity:
+            create_call_log(
+                db,
+                call_type="multi_document_rag",
+                stage="llamaindex_multi_document_query_engine",
+                trace_id=request.state.trace_id,
+                model=answer.model,
+                prompt_tokens=answer.prompt_tokens,
+                completion_tokens=answer.completion_tokens,
+                total_tokens=answer.total_tokens,
+                cost_ms=cost_ms,
+                status="success",
+                **answer.prompt_identity.as_call_log_fields(),
+                detail={
+                    "framework": "llamaindex",
+                    "orchestration": "RouterRetriever + RetrieverQueryEngine",
+                    "node_postprocessor": "GovernedRagNodePostprocessor",
+                    "retrieval_backend": "project_milvus",
+                    "selected_domain_id": result.route.selected_domain_id,
+                    "selected_document_count": len(result.route.selected_document_ids),
+                    "active_version_by_document_id": result.active_version_by_document_id,
+                    "global_ranking": True,
+                    "prompt_source": answer.prompt_identity.prompt_source,
+                },
+                commit=False,
+            )
+        db.commit()
+        return success(
+            MultiDocumentRagAnswerResponse(
+                answer=answer.answer,
+                references=[
+                    reference.model_copy(update={"score": round(reference.score, 6)})
+                    for reference in answer.references
+                ],
+                selected_domain_id=result.route.selected_domain_id,
+                selected_document_ids=result.route.selected_document_ids,
+                active_version_by_document_id=result.active_version_by_document_id,
+                route_reason=result.route.route_reason,
+                retrieved_chunk_count=answer.retrieved_node_count,
+                included_chunk_count=answer.included_node_count,
+                omitted_chunk_count=answer.omitted_node_count,
+                top_score=(round(answer.top_score, 6) if answer.top_score is not None else None),
+                score_threshold=answer.score_threshold,
+                rejected_by_score_threshold=answer.rejected_by_score_threshold,
+                prompt_tokens=answer.prompt_tokens,
+                completion_tokens=answer.completion_tokens,
+                total_tokens=answer.total_tokens,
+                cost_ms=cost_ms,
+            ),
+            message="LlamaIndex 多文档 RAG 回答完成，路由、版本和引用均可追溯",
+            trace_id=request.state.trace_id,
+        )
+    except ModelCallException as exc:
+        db.rollback()
+        create_call_log(
+            db,
+            call_type="multi_document_rag",
+            stage="llamaindex_multi_document_query_engine",
+            trace_id=request.state.trace_id,
+            model=settings.dashscope_model,
+            cost_ms=round((time.perf_counter() - start_time) * 1000),
+            status="error",
+            error_type=exc.error_type,
+            error_message=exc.message,
+            detail={
+                "framework": "llamaindex",
+                "orchestration": "RouterRetriever + RetrieverQueryEngine",
+                "retrieval_backend": "project_milvus",
+            },
+        )
+        raise
 
 
 @router.post(
@@ -893,69 +1300,77 @@ def answer_with_rag(
     request: Request,
     db: Session = Depends(get_db),
 ) -> ApiResponse[RagAnswerResponse]:
+    """正式单文档 RAG 入口：保留原 URL，内部已升级为 LlamaIndex 编排。
+
+    这避免调用方为框架迁移改接口，也避免形成“/rag-answer 是旧链路、
+    /llamaindex-rag-answer 才是新链路”的双生产事实。旧无框架的
+    ``search_active_document_chunks → build_rag_context → generate_rag_answer`` 保留在
+    ``rag_context_service`` 供对照和历史回归，不再作为此入口的运行路径。
+    """
+
     score_threshold = _resolve_rag_score_threshold(request_body.score_threshold)
-    model, _, active_version_id, items = search_active_document_chunks(
-        db,
-        document_id=document_id,
-        question=request_body.question,
-        top_k=request_body.retrieval_top_k,
-        use_reranker=request_body.use_reranker,
-        rerank_top_n=request_body.rerank_top_n,
-    )
-    context_result = build_rag_context(
-        items,
-        max_context_characters=request_body.max_context_characters,
-        score_threshold=score_threshold,
-    )
     start_time = time.perf_counter()
-    rag_prompt = get_active_rag_answer_prompt(db) if context_result.references else None
     try:
-        generation = generate_rag_answer(
+        result = answer_active_document_with_llamaindex(
+            db,
+            document_id=document_id,
             question=request_body.question,
-            context_result=context_result,
-            prompt=rag_prompt,
+            retrieval_top_k=request_body.retrieval_top_k,
+            max_context_characters=request_body.max_context_characters,
+            use_reranker=request_body.use_reranker,
+            rerank_top_n=request_body.rerank_top_n,
+            score_threshold=score_threshold,
+            trace_id=request.state.trace_id,
         )
         cost_ms = round((time.perf_counter() - start_time) * 1000)
         # 无资料兜底没有发生模型调用，不应伪造一条成功的模型成本日志。
-        if generation.model:
+        if result.model:
             create_call_log(
                 db,
                 call_type="rag_knowledge_answer",
+                stage="llamaindex_query_engine",
                 trace_id=request.state.trace_id,
-                model=generation.model,
-                prompt_tokens=generation.prompt_tokens,
-                completion_tokens=generation.completion_tokens,
-                total_tokens=generation.total_tokens,
+                model=result.model,
+                prompt_tokens=result.prompt_tokens,
+                completion_tokens=result.completion_tokens,
+                total_tokens=result.total_tokens,
                 cost_ms=cost_ms,
                 status="success",
-                **generation.prompt_identity.as_call_log_fields(),
-                detail={"prompt_source": generation.prompt_identity.prompt_source},
+                **result.prompt_identity.as_call_log_fields(),
+                detail={
+                    "framework": "llamaindex",
+                    "orchestration": "RetrieverQueryEngine",
+                    "node_postprocessor": "GovernedRagNodePostprocessor",
+                    "retrieval_backend": "project_milvus",
+                    "version_id": result.retrieval.active_version_id,
+                    "prompt_source": result.prompt_identity.prompt_source,
+                },
             )
         return success(
             RagAnswerResponse(
-                answer=generation.answer,
+                answer=result.answer,
                 references=[
                     reference.model_copy(update={"score": round(reference.score, 6)})
-                    for reference in generation.references
+                    for reference in result.references
                 ],
                 document_id=document_id,
-                active_version_id=active_version_id,
-                retrieved_chunk_count=len(items),
-                included_chunk_count=len(context_result.references),
-                omitted_chunk_count=context_result.omitted_chunk_count,
+                active_version_id=result.retrieval.active_version_id,
+                retrieved_chunk_count=result.retrieved_node_count,
+                included_chunk_count=result.included_node_count,
+                omitted_chunk_count=result.omitted_node_count,
                 top_score=(
-                    round(context_result.top_score, 6)
-                    if context_result.top_score is not None
+                    round(result.top_score, 6)
+                    if result.top_score is not None
                     else None
                 ),
-                score_threshold=context_result.score_threshold,
-                rejected_by_score_threshold=context_result.rejected_by_score_threshold,
-                prompt_tokens=generation.prompt_tokens,
-                completion_tokens=generation.completion_tokens,
-                total_tokens=generation.total_tokens,
+                score_threshold=result.score_threshold,
+                rejected_by_score_threshold=result.rejected_by_score_threshold,
+                prompt_tokens=result.prompt_tokens,
+                completion_tokens=result.completion_tokens,
+                total_tokens=result.total_tokens,
                 cost_ms=cost_ms,
             ),
-            message="RAG 回答生成完成，引用来源已校验",
+            message="LlamaIndex RAG 回答生成完成，引用来源已校验",
             trace_id=request.state.trace_id,
         )
     except ModelCallException as exc:
@@ -963,18 +1378,111 @@ def answer_with_rag(
         create_call_log(
             db,
             call_type="rag_knowledge_answer",
+            stage="llamaindex_query_engine",
             trace_id=request.state.trace_id,
-            model=(rag_prompt.model or settings.dashscope_model) if rag_prompt else model,
+            model=settings.dashscope_model,
             cost_ms=cost_ms,
             status="error",
             error_type=exc.error_type,
             error_message=exc.message,
-            **(
-                get_rag_answer_prompt_identity(rag_prompt).as_call_log_fields()
-                if rag_prompt
-                else {}
+            detail={"framework": "llamaindex", "orchestration": "RetrieverQueryEngine"},
+        )
+        raise
+
+
+@router.post(
+    "/documents/{document_id}/llamaindex-rag-answer",
+    response_model=ApiResponse[LlamaIndexRagAnswerResponse],
+    summary="Day31：通过 LlamaIndex RetrieverQueryEngine 生成带引用的 RAG 回答",
+)
+def answer_with_llamaindex_rag(
+    document_id: str,
+    request_body: RagAnswerRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[LlamaIndexRagAnswerResponse]:
+    """独立候选链路，保留 /rag-answer 基线接口，方便逐次对照而非静默替换。"""
+
+    score_threshold = _resolve_rag_score_threshold(request_body.score_threshold)
+    start_time = time.perf_counter()
+    try:
+        result = answer_active_document_with_llamaindex(
+            db,
+            document_id=document_id,
+            question=request_body.question,
+            retrieval_top_k=request_body.retrieval_top_k,
+            max_context_characters=request_body.max_context_characters,
+            use_reranker=request_body.use_reranker,
+            rerank_top_n=request_body.rerank_top_n,
+            score_threshold=score_threshold,
+            trace_id=request.state.trace_id,
+        )
+        cost_ms = round((time.perf_counter() - start_time) * 1000)
+        if result.model:
+            create_call_log(
+                db,
+                call_type="llamaindex_law_rag",
+                stage="llamaindex_query_engine",
+                trace_id=request.state.trace_id,
+                model=result.model,
+                prompt_tokens=result.prompt_tokens,
+                completion_tokens=result.completion_tokens,
+                total_tokens=result.total_tokens,
+                cost_ms=cost_ms,
+                status="success",
+                **result.prompt_identity.as_call_log_fields(),
+                detail={
+                    "framework": "llamaindex",
+                    "orchestration": "RetrieverQueryEngine",
+                    "retrieval_backend": "project_milvus",
+                    "document_id": document_id,
+                    "version_id": result.retrieval.active_version_id,
+                    "retrieved_node_count": result.retrieved_node_count,
+                    "included_node_count": result.included_node_count,
+                    "omitted_node_count": result.omitted_node_count,
+                    "prompt_source": result.prompt_identity.prompt_source,
+                },
+            )
+        return success(
+            LlamaIndexRagAnswerResponse(
+                answer=result.answer,
+                references=[
+                    reference.model_copy(update={"score": round(reference.score, 6)})
+                    for reference in result.references
+                ],
+                document_id=document_id,
+                active_version_id=result.retrieval.active_version_id,
+                retrieved_chunk_count=result.retrieved_node_count,
+                included_chunk_count=result.included_node_count,
+                omitted_chunk_count=result.omitted_node_count,
+                top_score=(round(result.top_score, 6) if result.top_score is not None else None),
+                score_threshold=result.score_threshold,
+                rejected_by_score_threshold=result.rejected_by_score_threshold,
+                prompt_tokens=result.prompt_tokens,
+                completion_tokens=result.completion_tokens,
+                total_tokens=result.total_tokens,
+                cost_ms=cost_ms,
             ),
-            detail={"prompt_source": "database"} if rag_prompt else None,
+            message="LlamaIndex QueryEngine RAG 回答生成完成，仍复用项目 Milvus、版本与引用治理",
+            trace_id=request.state.trace_id,
+        )
+    except ModelCallException as exc:
+        cost_ms = round((time.perf_counter() - start_time) * 1000)
+        create_call_log(
+            db,
+            call_type="llamaindex_law_rag",
+            stage="llamaindex_query_engine",
+            trace_id=request.state.trace_id,
+            cost_ms=cost_ms,
+            status="error",
+            error_type=exc.error_type,
+            error_message=exc.message,
+            detail={
+                "framework": "llamaindex",
+                "orchestration": "RetrieverQueryEngine",
+                "retrieval_backend": "project_milvus",
+                "document_id": document_id,
+            },
         )
         raise
 

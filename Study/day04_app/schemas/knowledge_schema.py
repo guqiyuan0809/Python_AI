@@ -198,6 +198,79 @@ class MilvusChunkSearchResponse(BaseModel):
     items: list[MilvusChunkSearchItem] = Field(default_factory=list, description="按相似度降序排列的 Top-K 结果")
 
 
+class LlamaIndexLawRetrievalRequest(MilvusChunkSearchRequest):
+    """Day31 法规检索适配层入参。
+
+    与现有 Milvus 检索使用相同参数，保证框架接入前后可以在同一 active 文档版本上对照。
+    """
+
+
+class LlamaIndexLawSourceNode(BaseModel):
+    """LlamaIndex NodeWithScore 的安全可读投影，不直接向客户端暴露框架内部对象。"""
+
+    node_id: str = Field(..., description="LlamaIndex TextNode ID；与项目 chunk_id 保持一致")
+    document_id: str = Field(..., description="节点所属知识库文档 ID")
+    version_id: str = Field(..., description="节点所属 active 文档版本 ID")
+    chunk_index: int = Field(..., ge=0, description="命中子 chunk 的文档内顺序")
+    parent_chunk_id: str | None = Field(None, description="父子切块模式下的父块 ID")
+    score: float = Field(..., ge=-1, le=1, description="LlamaIndex NodeWithScore 的最终相关性分数")
+    vector_score: float | None = Field(None, ge=-1, le=1, description="Milvus 原始余弦相似度")
+    rerank_score: float | None = Field(None, ge=0, le=1, description="启用 Reranker 后的相关性分数")
+    content: str = Field(..., description="节点可提供给后续 Query Engine 的文本；父子模式下为父块全文")
+    source_locations: list[str] = Field(default_factory=list, description="原始法规文档中的页码、段落等来源位置")
+
+
+class LlamaIndexLawRetrievalResponse(BaseModel):
+    """LlamaIndex 法规检索预览：只验证框架节点适配，尚未调用 LLM 生成回答。"""
+
+    framework: str = Field("llamaindex", description="本次编排框架")
+    retrieval_backend: str = Field("project_milvus", description="实际向量检索后端")
+    document_id: str = Field(..., description="检索的知识库文档 ID")
+    active_version_id: str = Field(..., description="本次使用的 active 文档版本 ID")
+    embedding_model: str = Field(..., description="查询向量使用的 Embedding 模型")
+    vector_dimension: int = Field(..., ge=1, description="查询向量维度")
+    node_count: int = Field(..., ge=0, description="LlamaIndex Retriever 返回的 NodeWithScore 数量")
+    nodes: list[LlamaIndexLawSourceNode] = Field(default_factory=list, description="转换后的法规知识节点")
+
+
+class LlamaIndexChunkPreviewRequest(BaseModel):
+    """Day31 LlamaIndex 文档切块预览参数；不会写入线上候选版本。"""
+
+    chunk_size: int = Field(512, ge=128, le=4096, description="LlamaIndex SentenceSplitter 的 token 预算")
+    chunk_overlap: int = Field(64, ge=0, le=1024, description="相邻节点重叠的 token 预算")
+
+    @model_validator(mode="after")
+    def validate_overlap(self) -> "LlamaIndexChunkPreviewRequest":
+        if self.chunk_overlap >= self.chunk_size:
+            raise ValueError("chunk_overlap 必须小于 chunk_size")
+        return self
+
+
+class LlamaIndexChunkPreviewNode(BaseModel):
+    """LlamaIndex TextNode 的稳定 HTTP 投影。"""
+
+    node_id: str = Field(..., description="LlamaIndex 节点 ID")
+    content: str = Field(..., description="节点文本")
+    document_id: str = Field(..., description="知识库文档业务 ID")
+    source_segment_index: int | None = Field(None, description="原始解析段序号")
+    source_location: str | None = Field(None, description="原始文档位置")
+    start_char_idx: int | None = Field(None, ge=0, description="节点在原始段中的起始字符位置")
+    end_char_idx: int | None = Field(None, ge=0, description="节点在原始段中的结束字符位置")
+
+
+class LlamaIndexChunkPreviewResponse(BaseModel):
+    """LlamaIndex 文档切块预览响应；结果未写入 MySQL/Milvus。"""
+
+    framework: str = Field("llamaindex", description="本次文档处理框架")
+    document_id: str = Field(..., description="知识库文档业务 ID")
+    source_segment_count: int = Field(..., ge=0, description="参与切块的原始段数量")
+    node_count: int = Field(..., ge=0, description="LlamaIndex 生成的节点数量")
+    chunk_size: int = Field(..., ge=1, description="实际使用的 token 切块预算")
+    chunk_overlap: int = Field(..., ge=0, description="实际使用的 token 重叠预算")
+    persisted: bool = Field(False, description="本接口仅预览，不持久化节点")
+    nodes: list[LlamaIndexChunkPreviewNode] = Field(default_factory=list, description="前 N 个节点预览")
+
+
 class DocumentVersionChunkSearchResponse(BaseModel):
     """发布前版本验证检索结果；version_id 可为候选 indexed 版本，不代表线上 active 版本。"""
 
@@ -532,6 +605,120 @@ class RagAnswerRequest(BaseModel):
     )
 
 
+class KnowledgeDomainRequest(BaseModel):
+    """一次多文档查询中已经被业务层允许访问的知识域。
+
+    这是 Day31 的开发/教学 DTO：调用方显式提供已经通过权限和数据范围过滤的文档集合，
+    方便先观察 LlamaIndex RouterRetriever 的行为。正式接金汤令后应由服务端根据
+    tenant/park/enterprise 与角色数据范围查询 domain-document 关系，而不是相信前端传入
+    的 ``document_ids``。
+    """
+
+    domain_id: str = Field(..., min_length=1, max_length=64, description="业务知识域 ID，例如 safety_compliance")
+    description: str = Field(..., min_length=1, max_length=300, description="供 RouterRetriever 识别领域语义的受控说明")
+    document_ids: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=30,
+        description="该知识域中已通过业务权限过滤的知识文档 ID 集合",
+    )
+    keywords: list[str] = Field(
+        default_factory=list,
+        max_length=30,
+        description="首版确定性路由关键词；后续可在同一位置替换为评测后 LLM Selector",
+    )
+
+    @model_validator(mode="after")
+    def validate_document_ids(self) -> "KnowledgeDomainRequest":
+        normalized_document_ids = list(dict.fromkeys(document_id.strip() for document_id in self.document_ids if document_id.strip()))
+        if not normalized_document_ids:
+            raise ValueError("知识域至少包含一个有效 document_id")
+        self.document_ids = normalized_document_ids
+        self.keywords = list(dict.fromkeys(keyword.strip() for keyword in self.keywords if keyword.strip()))
+        return self
+
+
+class MultiDocumentRagRequest(BaseModel):
+    """多文档知识域路由请求，共用预览和正式回答的检索治理参数。"""
+
+    question: str = Field(..., min_length=1, max_length=1000, description="用户问题")
+    domains: list[KnowledgeDomainRequest] = Field(
+        ...,
+        min_length=1,
+        max_length=8,
+        description="已授权的知识域；RouterRetriever 只会从这里选择一个领域",
+    )
+    default_domain_id: str | None = Field(
+        None,
+        min_length=1,
+        max_length=64,
+        description="没有关键词命中时的兜底知识域；建议配置为已授权的综合安全知识域",
+    )
+    retrieval_top_k: int = Field(5, ge=1, le=10, description="选中知识域内跨文档全局召回的 Top-K")
+    max_context_characters: int = Field(4000, ge=1000, le=12000, description="实际送入模型资料包的最大字符数")
+    use_reranker: bool = Field(False, description="是否对全局召回候选统一执行 Reranker 精排")
+    rerank_top_n: int = Field(20, ge=1, le=50, description="启用精排时的全局粗排候选数")
+    score_threshold: float | None = Field(None, ge=-1, le=1, description="可选拒答阈值")
+
+    @model_validator(mode="after")
+    def validate_route_request(self) -> "MultiDocumentRagRequest":
+        domain_ids = [domain.domain_id for domain in self.domains]
+        if len(set(domain_ids)) != len(domain_ids):
+            raise ValueError("domains 中 domain_id 不能重复")
+        if self.default_domain_id is not None and self.default_domain_id not in domain_ids:
+            raise ValueError("default_domain_id 必须属于 domains")
+        if self.use_reranker and self.rerank_top_n < self.retrieval_top_k:
+            raise ValueError("启用 Reranker 时 rerank_top_n 必须大于等于 retrieval_top_k")
+        return self
+
+
+class MultiDocumentRagContextPreviewResponse(BaseModel):
+    """跨文档回答前的证据预览；不调用聊天模型。"""
+
+    framework: str = Field("llamaindex", description="负责路由和检索后编排的框架")
+    orchestration: str = Field("RouterRetriever + RetrieverQueryEngine", description="本次使用的 LlamaIndex 编排组件")
+    retrieval_backend: str = Field("project_milvus", description="实际向量检索与版本治理后端")
+    selected_domain_id: str = Field(..., description="RouterRetriever 实际选择的知识域")
+    selected_document_ids: list[str] = Field(default_factory=list, description="该领域允许参与检索的文档 ID")
+    active_version_by_document_id: dict[str, str] = Field(default_factory=dict, description="本次参与检索的每篇文档 active 版本")
+    route_reason: str = Field(..., description="路由理由，例如 deterministic_domain_keyword_match")
+    embedding_model: str = Field(..., description="查询向量模型")
+    vector_dimension: int = Field(..., ge=1, description="查询向量维度")
+    retrieved_chunk_count: int = Field(..., ge=0, description="选中领域跨文档全局召回的 chunk 数")
+    included_chunk_count: int = Field(..., ge=0, description="实际进入资料包的 chunk 数")
+    omitted_chunk_count: int = Field(..., ge=0, description="因父块去重或预算未进入资料包的 chunk 数")
+    top_score: float | None = Field(None, description="全局 Top1 分数")
+    score_threshold: float | None = Field(None, description="本次拒答阈值")
+    rejected_by_score_threshold: bool = Field(False, description="是否因相关度门禁拒答")
+    context_char_count: int = Field(..., ge=0, description="资料包字符数")
+    references: list[RagContextReference] = Field(default_factory=list, description="实际资料编号与跨文档来源映射")
+    context: str = Field(..., description="仅开发观察：最终将被送入模型的资料包")
+
+
+class MultiDocumentRagAnswerResponse(BaseModel):
+    """多文档受治理 RAG 回答，不伪造唯一的 document_id/version_id。"""
+
+    framework: str = Field("llamaindex", description="负责路由和检索后编排的框架")
+    orchestration: str = Field("RouterRetriever + RetrieverQueryEngine", description="本次使用的 LlamaIndex 编排组件")
+    retrieval_backend: str = Field("project_milvus", description="实际向量检索与版本治理后端")
+    answer: str = Field(..., min_length=1, description="模型回答；事实结论应带 [S1] 等来源引用")
+    references: list[RagContextReference] = Field(default_factory=list, description="模型实际引用且已校验的跨文档来源")
+    selected_domain_id: str = Field(..., description="RouterRetriever 实际选择的知识域")
+    selected_document_ids: list[str] = Field(default_factory=list, description="本次允许检索的文档 ID")
+    active_version_by_document_id: dict[str, str] = Field(default_factory=dict, description="本次参与检索的每篇文档 active 版本")
+    route_reason: str = Field(..., description="路由理由")
+    retrieved_chunk_count: int = Field(..., ge=0, description="跨文档全局召回数")
+    included_chunk_count: int = Field(..., ge=0, description="实际送入模型的资料数")
+    omitted_chunk_count: int = Field(..., ge=0, description="未进入资料包的 chunk 数")
+    top_score: float | None = Field(None, description="全局 Top1 分数")
+    score_threshold: float | None = Field(None, description="本次拒答阈值")
+    rejected_by_score_threshold: bool = Field(False, description="是否触发相关度拒答")
+    prompt_tokens: int | None = Field(None, ge=0, description="模型输入 Token 数")
+    completion_tokens: int | None = Field(None, ge=0, description="模型输出 Token 数")
+    total_tokens: int | None = Field(None, ge=0, description="模型总 Token 数")
+    cost_ms: int = Field(..., ge=0, description="端到端处理耗时，单位毫秒")
+
+
 class RagAnswerResponse(BaseModel):
     """RAG 基线回答；references 仅包含模型实际引用且已校验存在的资料来源。"""
 
@@ -549,6 +736,18 @@ class RagAnswerResponse(BaseModel):
     completion_tokens: int | None = Field(None, ge=0, description="模型输出 Token 数")
     total_tokens: int | None = Field(None, ge=0, description="本次模型调用总 Token 数")
     cost_ms: int = Field(..., ge=0, description="仅模型生成阶段耗时，单位毫秒")
+
+
+class LlamaIndexRagAnswerResponse(RagAnswerResponse):
+    """Day31 QueryEngine 回答的稳定 HTTP 投影。
+
+    保留 RagAnswerResponse 以便基线与候选链路按同一质量、成本和来源字段对比；
+    额外字段只说明本次由哪个框架层完成编排，并不代表替换底层 Milvus 治理。
+    """
+
+    framework: str = Field("llamaindex", description="负责检索后编排的框架")
+    retrieval_backend: str = Field("project_milvus", description="实际向量检索与版本治理后端")
+    orchestration: str = Field("RetrieverQueryEngine", description="实际执行的 LlamaIndex 编排组件")
 
 
 class ContextualIndexTaskSubmitResponse(BaseModel):

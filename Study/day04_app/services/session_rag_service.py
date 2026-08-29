@@ -22,9 +22,11 @@ from day04_app.services.knowledge_milvus_search_service import search_active_doc
 from day04_app.services.rag_context_service import (
     RagContextBuildResult,
     build_rag_context,
-    generate_rag_answer,
-    get_active_rag_answer_prompt,
     get_rag_answer_prompt_identity,
+)
+from day04_app.services.llamaindex_rag_query_service import (
+    answer_prepared_document_with_llamaindex,
+    prepare_governed_llamaindex_rag,
 )
 from day04_app.services.session_service import (
     add_message,
@@ -129,7 +131,14 @@ def prepare_session_rag_context(
     session_id: str | None = None,
     message_id: str | None = None,
 ) -> SessionRagRetrievalContext:
-    """执行 RAG 检索与资料组装，不写会话消息，便于同步与异步入口共用。"""
+    """旧版无框架 RAG 对照实现，保留用于历史 Run 解释与回归比较。
+
+    它展示了没有 LlamaIndex 时项目必须手写的两步：
+    ``search_active_document_chunks → build_rag_context``。Day31 后正式同步与异步会话
+    已改为 ``ExistingKnowledgeMilvusRetriever → GovernedRagNodePostprocessor →
+    RetrieverQueryEngine``，不再调用本函数；请勿删除，否则历史日志中的
+    ``rag_context_build`` 语义将难以理解。
+    """
     retrieval_start_time = time.perf_counter()
     embedding_model, _, active_version_id, items = search_active_document_chunks(
         db,
@@ -254,7 +263,12 @@ def answer_session_with_rag(
     rerank_top_n: int = 20,
     score_threshold: float | None = None,
 ) -> SessionRagAnswerResult:
-    """同步完成一次会话 RAG：用户消息、回答、引用和调用日志均可按 trace 追溯。"""
+    """同步完成一次会话 RAG：消息、引用、Trace 与 LlamaIndex 编排统一可追溯。
+
+    旧实现把“检索、字符串上下文拼装、模型调用”分散在本服务和
+    ``rag_context_service``。现在本服务仅管理会话事务和审计；LlamaIndex QueryEngine
+    管理节点到回答的编排。这样 Celery Worker 也能复用同一个 QueryEngine 入口。
+    """
     get_session(db, session_id)
     user_message = add_message(
         db,
@@ -275,10 +289,15 @@ def answer_session_with_rag(
     # 根摘要从检索前开始计时，覆盖 Embedding、召回、精排、上下文和答案生成。
     rag_start_time = time.perf_counter()
     try:
-        retrieval_context = prepare_session_rag_context(
+        # legacy 对照（Day21，不再调用）：
+        # retrieval_context = prepare_session_rag_context(...)
+        # generation = generate_rag_answer(...)
+        #
+        # 正式框架链路：项目先构造受治理的 Retriever/Postprocessor/Prompt，再交给
+        # QueryEngine。这里没有把 DB、权限或会话状态交给 LlamaIndex，它只编排 RAG。
+        preparation = prepare_governed_llamaindex_rag(
             db,
             document_id=document_id,
-            message=message,
             retrieval_top_k=retrieval_top_k,
             max_context_characters=max_context_characters,
             use_reranker=use_reranker,
@@ -287,6 +306,10 @@ def answer_session_with_rag(
             trace_id=trace_id,
             session_id=session_id,
             message_id=assistant_message.message_id,
+        )
+        framework_result = answer_prepared_document_with_llamaindex(
+            question=message,
+            preparation=preparation,
         )
     except (BusinessException, ModelCallException) as exc:
         update_message(
@@ -312,62 +335,58 @@ def answer_session_with_rag(
         )
         raise
 
-    generation_start_time = time.perf_counter()
-    rag_prompt = (
-        get_active_rag_answer_prompt(db)
-        if retrieval_context.context_result.references
-        else None
-    )
+    generation_cost_ms = round((time.perf_counter() - rag_start_time) * 1000)
+    rag_total_cost_ms = generation_cost_ms
     try:
-        generation = generate_rag_answer(
-            question=message,
-            context_result=retrieval_context.context_result,
-            prompt=rag_prompt,
-        )
-        generation_cost_ms = round((time.perf_counter() - generation_start_time) * 1000)
-        rag_total_cost_ms = round((time.perf_counter() - rag_start_time) * 1000)
-
         # 回答状态、实际引用和调用日志同一次事务提交，不能出现成功回答却没有来源审计。
         persistent_assistant = get_message(db, assistant_message.message_id)
-        persistent_assistant.content = generation.answer
+        persistent_assistant.content = framework_result.answer
         persistent_assistant.status = "success"
-        persistent_assistant.model = generation.model
-        persistent_assistant.prompt_tokens = generation.prompt_tokens
-        persistent_assistant.completion_tokens = generation.completion_tokens
-        persistent_assistant.total_tokens = generation.total_tokens
+        persistent_assistant.model = framework_result.model
+        persistent_assistant.prompt_tokens = framework_result.prompt_tokens
+        persistent_assistant.completion_tokens = framework_result.completion_tokens
+        persistent_assistant.total_tokens = framework_result.total_tokens
         reference_records = add_rag_answer_reference_records(
             db,
             session_id=session_id,
             assistant_message_id=assistant_message.message_id,
-            references=generation.references,
+            references=framework_result.references,
         )
+        # Query Embedding、Milvus search、Reranker 已由受治理 Retriever 各自记阶段日志；
+        # 此处补一条框架编排摘要，排查时可清楚看见“不是手工 build_rag_context”。
         create_call_log(
             db,
             call_type="session_rag",
-            stage="rag_answer_generation",
+            stage="llamaindex_query_engine",
             trace_id=trace_id,
             session_id=session_id,
             message_id=assistant_message.message_id,
-            model=generation.model,
-            prompt_tokens=generation.prompt_tokens,
-            completion_tokens=generation.completion_tokens,
-            total_tokens=generation.total_tokens,
+            model=framework_result.model,
+            prompt_tokens=framework_result.prompt_tokens,
+            completion_tokens=framework_result.completion_tokens,
+            total_tokens=framework_result.total_tokens,
             cost_ms=generation_cost_ms,
             status="success",
             **(
-                generation.prompt_identity.as_call_log_fields()
-                if generation.prompt_identity
+                framework_result.prompt_identity.as_call_log_fields()
+                if framework_result.prompt_identity
                 else {}
             ),
             detail={
-                "used_reference_count": len(generation.references),
-                "model_called": generation.model is not None,
+                "framework": "llamaindex",
+                "orchestration": "RetrieverQueryEngine",
+                "node_postprocessor": "GovernedRagNodePostprocessor",
+                "used_reference_count": len(framework_result.references),
+                "model_called": framework_result.model is not None,
                 "prompt_source": (
-                    generation.prompt_identity.prompt_source
-                    if generation.prompt_identity
+                    framework_result.prompt_identity.prompt_source
+                    if framework_result.prompt_identity
                     else "none"
                 ),
-                "rejected_by_score_threshold": retrieval_context.context_result.rejected_by_score_threshold,
+                "retrieved_node_count": framework_result.retrieved_node_count,
+                "included_node_count": framework_result.included_node_count,
+                "omitted_node_count": framework_result.omitted_node_count,
+                "rejected_by_score_threshold": framework_result.rejected_by_score_threshold,
             },
             commit=False,
         )
@@ -377,13 +396,13 @@ def answer_session_with_rag(
             session_id=session_id,
             assistant_message_id=assistant_message.message_id,
             document_id=document_id,
-            active_version_id=retrieval_context.active_version_id,
-            model=generation.model,
-            total_tokens=generation.total_tokens,
+            active_version_id=framework_result.retrieval.active_version_id,
+            model=framework_result.model,
+            total_tokens=framework_result.total_tokens,
             cost_ms=rag_total_cost_ms,
             status="success",
-            rejected_by_score_threshold=retrieval_context.context_result.rejected_by_score_threshold,
-            used_reference_count=len(generation.references),
+            rejected_by_score_threshold=framework_result.rejected_by_score_threshold,
+            used_reference_count=len(framework_result.references),
             commit=False,
         )
         db.commit()
@@ -391,7 +410,7 @@ def answer_session_with_rag(
             db.refresh(reference_record)
     except ModelCallException as exc:
         db.rollback()
-        generation_cost_ms = round((time.perf_counter() - generation_start_time) * 1000)
+        generation_cost_ms = round((time.perf_counter() - rag_start_time) * 1000)
         update_message(
             db,
             assistant_message.message_id,
@@ -402,21 +421,21 @@ def answer_session_with_rag(
         create_call_log(
             db,
             call_type="session_rag",
-            stage="rag_answer_generation",
+            stage="llamaindex_query_engine",
             trace_id=trace_id,
             session_id=session_id,
             message_id=assistant_message.message_id,
-            model=(rag_prompt.model if rag_prompt else None),
+            model=(preparation.runtime_prompt.model if "preparation" in locals() else None),
             cost_ms=generation_cost_ms,
             status="error",
             error_type=exc.error_type,
             error_message=exc.message,
             **(
-                get_rag_answer_prompt_identity(rag_prompt).as_call_log_fields()
-                if rag_prompt
+                get_rag_answer_prompt_identity(preparation.runtime_prompt).as_call_log_fields()
+                if "preparation" in locals()
                 else {}
             ),
-            detail={"prompt_source": "database"} if rag_prompt else None,
+            detail={"framework": "llamaindex", "prompt_source": "database"} if "preparation" in locals() else None,
         )
         _create_rag_request_summary(
             db,
@@ -424,12 +443,12 @@ def answer_session_with_rag(
             session_id=session_id,
             assistant_message_id=assistant_message.message_id,
             document_id=document_id,
-            active_version_id=retrieval_context.active_version_id,
+            active_version_id=(framework_result.retrieval.active_version_id if "framework_result" in locals() else None),
             model=None,
             total_tokens=None,
             cost_ms=round((time.perf_counter() - rag_start_time) * 1000),
             status="error",
-            rejected_by_score_threshold=retrieval_context.context_result.rejected_by_score_threshold,
+            rejected_by_score_threshold=(framework_result.rejected_by_score_threshold if "framework_result" in locals() else None),
             error_type=exc.error_type,
             error_message=exc.message,
         )
@@ -441,19 +460,19 @@ def answer_session_with_rag(
     return SessionRagAnswerResult(
         user_message_id=user_message.message_id,
         assistant_message_id=assistant_message.message_id,
-        answer=generation.answer,
+        answer=framework_result.answer,
         references=[_to_reference_item(record) for record in reference_records],
         document_id=document_id,
-        active_version_id=retrieval_context.active_version_id,
-        retrieved_chunk_count=len(retrieval_context.items),
-        included_chunk_count=len(retrieval_context.context_result.references),
-        omitted_chunk_count=retrieval_context.context_result.omitted_chunk_count,
-        top_score=retrieval_context.context_result.top_score,
-        score_threshold=retrieval_context.context_result.score_threshold,
-        rejected_by_score_threshold=retrieval_context.context_result.rejected_by_score_threshold,
-        prompt_tokens=generation.prompt_tokens,
-        completion_tokens=generation.completion_tokens,
-        total_tokens=generation.total_tokens,
+        active_version_id=framework_result.retrieval.active_version_id,
+        retrieved_chunk_count=framework_result.retrieved_node_count,
+        included_chunk_count=framework_result.included_node_count,
+        omitted_chunk_count=framework_result.omitted_node_count,
+        top_score=framework_result.top_score,
+        score_threshold=framework_result.score_threshold,
+        rejected_by_score_threshold=framework_result.rejected_by_score_threshold,
+        prompt_tokens=framework_result.prompt_tokens,
+        completion_tokens=framework_result.completion_tokens,
+        total_tokens=framework_result.total_tokens,
         cost_ms=generation_cost_ms,
     )
 

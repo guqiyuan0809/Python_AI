@@ -38,5 +38,9 @@ celery_app.conf.update(
             "task": "day04_app.tasks.maintenance_tasks.scan_timeout_ai_tasks",
             "schedule": 60.0,
         },
+        "retry-pending-session-memory-index": {
+            "task": "day04_app.tasks.maintenance_tasks.retry_pending_session_memory_index",
+            "schedule": 60.0,
+        },
     },
 )

@@ -35,6 +35,9 @@ class ChatMessage(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     message_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     session_id: Mapped[str] = mapped_column(String(64), index=True)
+    # 会话轮次：一条 user 输入和对应的最终 assistant 输出共享同一个 turn_no。
+    # Agent Loop 内部的 step 不写在这里，避免把十步工具推理误算成十轮对话。
+    turn_no: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
     trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     stream_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     role: Mapped[str] = mapped_column(String(32))
@@ -1002,6 +1005,10 @@ class ChatSessionSummary(Base):
     summary: Mapped[str] = mapped_column(Text)
     # 表示这份摘要已经覆盖到了哪一条消息，后续只需要再携带这条消息之后的新消息。
     summary_until_message_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Day32：按会话轮次记录摘要边界；旧记录没有该字段时仍由 message_id 兼容读取。
+    summary_until_turn_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_turn_count: Mapped[int] = mapped_column(Integer, default=0)
+    source_token_count: Mapped[int] = mapped_column(Integer, default=0)
     # 同一个会话下的摘要版本号，越大表示越新的摘要。
     version: Mapped[int] = mapped_column(Integer, default=1)
     # 生成摘要时使用的模型，便于后续排查摘要质量和成本。
@@ -1011,6 +1018,87 @@ class ChatSessionSummary(Base):
     # 摘要失败时记录错误信息，方便排查，不直接返回给普通用户。
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class ChatSessionTurn(Base):
+    """会话轮次事实表。
+
+    一次普通聊天或一次 Agent Loop 对用户来说都是一轮；Agent Loop 内部的每个
+    ``step`` 由 run_id/ai_call_log 记录，不能与会话轮次混用。
+    """
+
+    __tablename__ = "chat_session_turn"
+    __table_args__ = (
+        UniqueConstraint("session_id", "turn_no", name="uk_chat_turn_session_no"),
+        Index("ix_chat_turn_session", "session_id", "created_at"),
+        Index("ix_chat_turn_task", "task_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    turn_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    turn_no: Mapped[int] = mapped_column(Integer)
+    user_message_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    assistant_message_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    # 异步聊天、RAG、结构化分析会把同一业务 task_id 固定在一轮会话上。Worker 必须
+    # 根据它回填对应轮次，不能用“最新 pending 轮次”猜测，否则同一会话并发提交时会串答。
+    task_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    agent_run_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    trace_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class AgentWorkingMemorySnapshot(Base):
+    """Agent Loop 内部步骤压缩快照，只用于当前 run 的继续决策，不进入长期语义记忆。"""
+
+    __tablename__ = "agent_working_memory_snapshot"
+    __table_args__ = (
+        Index("ix_awms_run", "run_id", "created_at"),
+        Index("ix_awms_session", "session_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    snapshot_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
+    session_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    trace_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    covered_step_from: Mapped[int] = mapped_column(Integer)
+    covered_step_to: Mapped[int] = mapped_column(Integer)
+    retained_step_from: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    state_json: Mapped[str] = mapped_column(Text)
+    summary_text: Mapped[str] = mapped_column(Text)
+    estimated_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    snapshot_version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class SessionMemory(Base):
+    """允许长期语义检索的记忆事实源；Milvus 只保存该表的向量索引。"""
+
+    __tablename__ = "session_memory"
+    __table_args__ = (
+        Index("ix_session_memory_scope", "session_id", "user_id", "tenant_id", "status"),
+        Index("ix_session_memory_embedding", "embedding_status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    memory_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    session_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    user_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    memory_type: Mapped[str] = mapped_column(String(32), index=True)
+    content: Mapped[str] = mapped_column(Text)
+    source_summary_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    source_message_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_run_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    embedding_status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    embedding_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 class AiCallLog(Base):

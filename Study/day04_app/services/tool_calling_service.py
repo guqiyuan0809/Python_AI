@@ -8,12 +8,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from day04_app.common.exceptions import BusinessException, ModelCallException
-from day04_app.security.permissions import PERMISSION_TOOL_EXECUTE
+from day04_app.security.permissions import PERMISSION_KNOWLEDGE_READ, PERMISSION_TOOL_EXECUTE
 from day04_app.security.principal import SYSTEM_PRINCIPAL, SecurityPrincipal
 from day04_app.models import AiAsyncTask, AiStructuredResult, ChatSession, KnowledgeDocument
 from day04_app.schemas.chat_schema import (
@@ -23,6 +23,7 @@ from day04_app.schemas.chat_schema import (
 )
 from day04_app.services.chat_service import call_chat_completion, create_client, extract_json_object
 from day04_app.services.call_log_service import create_call_log
+from day04_app.services.tool_execution_context import ToolExecutionContext
 from settings import settings
 
 
@@ -71,6 +72,16 @@ class GetKnowledgeDocumentSummaryArgs(BaseModel):
     document_id: str = Field(..., min_length=1, description="知识库文档 ID")
 
 
+class KnowledgeSearchArgs(BaseModel):
+    """模型只能提供问题，不能决定可以访问哪些文档或知识域。"""
+
+    # StructuredTool 的 schema 是模型唯一可见的入参契约。拒绝额外字段，避免
+    # ``document_ids`` / ``domain_id`` 等伪造范围被 Pydantic 静默忽略。
+    model_config = ConfigDict(extra="forbid")
+
+    question: str = Field(..., min_length=1, max_length=1000, description="需要基于已授权知识库检索的问题")
+
+
 class GetWorkOrderAnalysisResultArgs(BaseModel):
     business_id: str = Field(..., min_length=1, description="工单业务 ID")
 
@@ -96,6 +107,8 @@ class ToolDefinition:
     risk_level: str
     args_model: type[BaseModel]
     executor: Callable[[Session, BaseModel], dict[str, Any]]
+    # 默认权限保持与 Day23 工具兼容；知识检索必须额外具有知识库读取权限。
+    required_permissions: tuple[str, ...] = (PERMISSION_TOOL_EXECUTE,)
 
     def to_item(self) -> ToolDefinitionItem:
         return ToolDefinitionItem(
@@ -124,11 +137,18 @@ class ToolPolicyChecker:
         matched_rules: list[str] = []
 
         # Service 层再次校验工具权限，避免未来非 HTTP 调用绕过 Router 的 RBAC。
+        # 先保留既有工具执行权限的审计语义；知识检索等工具在此基础上再检查专属权限。
         if not principal.has_permissions(PERMISSION_TOOL_EXECUTE):
             return ToolPolicyResult(
                 decision="block",
                 reason="当前调用者没有执行受控工具的权限",
                 matched_rules=["MISSING_TOOL_EXECUTE_PERMISSION"],
+            )
+        if not principal.has_permissions(*tool.required_permissions):
+            return ToolPolicyResult(
+                decision="block",
+                reason="当前调用者缺少执行该受控工具所需权限",
+                matched_rules=["MISSING_TOOL_SPECIFIC_PERMISSION"],
             )
 
         if not tool.read_only:
@@ -336,6 +356,24 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
         args_model=GetKnowledgeDocumentSummaryArgs,
         executor=execute_get_knowledge_document_summary,
     ),
+    "knowledge_search": ToolDefinition(
+        name="knowledge_search",
+        description=(
+            "在当前登录用户已授权的园区安全知识域中检索法规、隐患整改标准和处置资料，"
+            "返回带来源引用的证据与回答。模型只能传 question，不能指定或扩大文档范围。"
+        ),
+        tool_type="knowledge_retrieval",
+        read_only=True,
+        require_human_confirm=False,
+        risk_level="low",
+        args_model=KnowledgeSearchArgs,
+        # 真正的 LlamaIndex executor 需要 Runtime 中的可信身份、数据范围与 Trace，
+        # 因此不通过这个通用 executor 直接调用，而由 LangChain Tool 适配层显式绑定。
+        executor=lambda _db, _args: (_ for _ in ()).throw(
+            RuntimeError("knowledge_search 必须通过 LangChain 受治理适配器执行")
+        ),
+        required_permissions=(PERMISSION_TOOL_EXECUTE, PERMISSION_KNOWLEDGE_READ),
+    ),
     "get_work_order_analysis_result": ToolDefinition(
         name="get_work_order_analysis_result",
         description="根据工单业务 ID 查询最新的工单结构化分析结果，包括分类、风险等级、摘要、建议和是否需要人工复核。",
@@ -394,6 +432,7 @@ def execute_registered_tool(
     db: Session,
     decision: ToolDecision,
     principal: SecurityPrincipal | None = None,
+    execution_context: ToolExecutionContext | None = None,
 ) -> dict[str, Any] | None:
     if not decision.need_tool:
         return None
@@ -424,6 +463,17 @@ def execute_registered_tool(
         args = tool.args_model.model_validate(decision.arguments)
     except ValidationError as exc:
         raise BusinessException(code=40091, message=f"工具参数不合法：{exc.errors()[0]['msg']}") from exc
+    if tool.name == "knowledge_search":
+        # 此工具需要可信的数据范围和 Trace 关联，不能通过 ToolDefinition 的通用两参
+        # executor 获得；在统一策略与 Pydantic 校验之后显式进入其受治理实现。
+        from day04_app.services.knowledge_search_tool_service import execute_knowledge_search_tool
+
+        return execute_knowledge_search_tool(
+            db,
+            args,
+            effective_principal,
+            execution_context or ToolExecutionContext(),
+        )
     return {
         "tool_name": tool.name,
         "arguments": args.model_dump(),

@@ -34,20 +34,22 @@ from day04_app.services.chat_service import (
 from day04_app.services.eval_master_service import get_active_prompt_version_for_runtime
 from day04_app.services.outbox_dispatcher import dispatch_outbox_event
 from day04_app.services.rag_context_service import (
-    generate_rag_answer,
-    get_active_rag_answer_prompt,
     get_rag_answer_prompt_identity,
+)
+from day04_app.services.llamaindex_rag_query_service import (
+    answer_prepared_document_with_llamaindex,
+    prepare_governed_llamaindex_rag,
 )
 from day04_app.services.session_rag_service import (
     add_rag_answer_reference_records,
-    prepare_session_rag_context,
 )
 from day04_app.services.session_service import (
-    add_message,
     build_messages,
+    create_or_reuse_task_assistant_message,
     get_message,
     refresh_session_summary,
     should_refresh_summary_for_session,
+    set_session_turn_status_for_task,
     update_message,
 )
 from day04_app.services.structured_result_service import create_structured_result
@@ -55,6 +57,9 @@ from day04_app.services.eval_result_service import save_eval_report
 from day04_app.services.agent_loop_eval_result_service import save_agent_eval_report
 from day04_app.services.agent_loop_eval_runner import run_agent_loop_eval
 from day04_app.services.agent_loop_service import run_agent_loop
+from day04_app.services.agent_memory_service import get_active_memory_for_embedding
+from day04_app.services.knowledge_embedding_service import generate_text_embeddings
+from day04_app.services.milvus_vector_store_service import upsert_session_memory_vector
 from day04_app.security.principal import SecurityPrincipal
 from day04_app.services.work_order_eval_runner import run_work_order_eval
 from day04_app.services.knowledge_contextualization_service import build_contextual_vector_index
@@ -62,6 +67,47 @@ from settings import settings
 
 
 logger = logging.getLogger("day04_app.worker")
+
+
+@celery_app.task(name="day04_app.tasks.ai_tasks.index_session_memory")
+def index_session_memory(memory_id: str) -> dict:
+    """异步向量化一条已经过 MySQL 治理的长期记忆。
+
+    不接受聊天正文或工具 observation 参数，避免调用方绕过 ``SessionMemory`` 的留存、范围
+    与状态控制。Milvus 失败时保留 MySQL pending/error 状态，后续可补偿重试。
+    """
+
+    db = SessionLocal()
+    try:
+        record = get_active_memory_for_embedding(db, memory_id)
+        model, vectors = generate_text_embeddings([record.content])
+        upsert_session_memory_vector(
+            record={
+                "memory_id": record.memory_id,
+                "session_id": record.session_id or "",
+                "user_id": record.user_id or "",
+                "tenant_id": record.tenant_id or "",
+                "memory_type": record.memory_type,
+                "status": record.status,
+                "embedding": vectors[0],
+            }
+        )
+        record.embedding_status = "indexed"
+        record.embedding_error_message = None
+        db.commit()
+        return {"memory_id": memory_id, "status": "indexed", "embedding_model": model}
+    except Exception as exc:
+        try:
+            record = get_active_memory_for_embedding(db, memory_id)
+            record.embedding_status = "error"
+            record.embedding_error_message = f"{type(exc).__name__}"
+            db.commit()
+        except Exception:
+            db.rollback()
+        logger.exception("memory_id=%s session memory embedding failed", memory_id)
+        raise
+    finally:
+        db.close()
 
 
 @celery_app.task(name="day04_app.tasks.ai_tasks.execute_agent_loop_task")
@@ -183,24 +229,25 @@ def execute_session_rag_task(
         if task is None:
             return {"task_id": task_id, "status": "ignored"}
 
-        assistant_message = add_message(
+        assistant_message = create_or_reuse_task_assistant_message(
             db,
-            session_id,
-            "assistant",
-            "知识库回答生成中",
+            task_id=task_id,
+            session_id=session_id,
             trace_id=trace_id,
+            placeholder_content="知识库回答生成中",
             model=settings.dashscope_model,
-            status="pending",
         )
         assistant_message_id = assistant_message.message_id
         if bind_task_message(db, task_id, assistant_message_id) is None:
             return {"task_id": task_id, "status": "ignored"}
 
         start_time = time.perf_counter()
-        retrieval_context = prepare_session_rag_context(
+        # legacy 对照：旧 Worker 调用 prepare_session_rag_context + generate_rag_answer。
+        # 现在与同步入口共享同一条 LlamaIndex QueryEngine 编排，避免线上与异步的
+        # 阈值、父块去重、Prompt 填充规则发生漂移。
+        preparation = prepare_governed_llamaindex_rag(
             db,
             document_id=document_id,
-            message=message,
             retrieval_top_k=retrieval_top_k,
             max_context_characters=max_context_characters,
             use_reranker=use_reranker,
@@ -211,25 +258,19 @@ def execute_session_rag_task(
             session_id=session_id,
             message_id=assistant_message_id,
         )
-        rag_prompt = (
-            get_active_rag_answer_prompt(db)
-            if retrieval_context.context_result.references
-            else None
-        )
-        generation = generate_rag_answer(
+        framework_result = answer_prepared_document_with_llamaindex(
             question=message,
-            context_result=retrieval_context.context_result,
-            prompt=rag_prompt,
+            preparation=preparation,
         )
         cost_ms = round((time.perf_counter() - start_time) * 1000)
 
         completed_task = mark_task_success(
             db,
             task_id=task_id,
-            result_text=generation.answer,
-            prompt_tokens=generation.prompt_tokens,
-            completion_tokens=generation.completion_tokens,
-            total_tokens=generation.total_tokens,
+            result_text=framework_result.answer,
+            prompt_tokens=framework_result.prompt_tokens,
+            completion_tokens=framework_result.completion_tokens,
+            total_tokens=framework_result.total_tokens,
             cost_ms=cost_ms,
             commit=False,
         )
@@ -238,46 +279,59 @@ def execute_session_rag_task(
 
         # 回答、实际引用和调用日志统一提交，避免成功消息没有可追溯来源。
         persistent_assistant = get_message(db, assistant_message_id)
-        persistent_assistant.content = generation.answer
+        persistent_assistant.content = framework_result.answer
         persistent_assistant.status = "success"
-        persistent_assistant.model = generation.model
-        persistent_assistant.prompt_tokens = generation.prompt_tokens
-        persistent_assistant.completion_tokens = generation.completion_tokens
-        persistent_assistant.total_tokens = generation.total_tokens
+        persistent_assistant.model = framework_result.model
+        persistent_assistant.prompt_tokens = framework_result.prompt_tokens
+        persistent_assistant.completion_tokens = framework_result.completion_tokens
+        persistent_assistant.total_tokens = framework_result.total_tokens
+        set_session_turn_status_for_task(
+            db,
+            task_id=task_id,
+            status="success",
+            assistant_message_id=assistant_message_id,
+            commit=False,
+        )
         add_rag_answer_reference_records(
             db,
             session_id=session_id,
             assistant_message_id=assistant_message_id,
-            references=generation.references,
+            references=framework_result.references,
         )
         create_call_log(
             db,
             call_type="async_session_rag",
-            stage="rag_answer_generation",
+            stage="llamaindex_query_engine",
             trace_id=trace_id,
             task_id=task_id,
             session_id=session_id,
             message_id=assistant_message_id,
-            model=generation.model,
-            prompt_tokens=generation.prompt_tokens,
-            completion_tokens=generation.completion_tokens,
-            total_tokens=generation.total_tokens,
+            model=framework_result.model,
+            prompt_tokens=framework_result.prompt_tokens,
+            completion_tokens=framework_result.completion_tokens,
+            total_tokens=framework_result.total_tokens,
             cost_ms=cost_ms,
             status="success",
             **(
-                generation.prompt_identity.as_call_log_fields()
-                if generation.prompt_identity
+                framework_result.prompt_identity.as_call_log_fields()
+                if framework_result.prompt_identity
                 else {}
             ),
             detail={
-                "used_reference_count": len(generation.references),
-                "model_called": generation.model is not None,
+                "framework": "llamaindex",
+                "orchestration": "RetrieverQueryEngine",
+                "node_postprocessor": "GovernedRagNodePostprocessor",
+                "used_reference_count": len(framework_result.references),
+                "model_called": framework_result.model is not None,
                 "prompt_source": (
-                    generation.prompt_identity.prompt_source
-                    if generation.prompt_identity
+                    framework_result.prompt_identity.prompt_source
+                    if framework_result.prompt_identity
                     else "none"
                 ),
-                "rejected_by_score_threshold": retrieval_context.context_result.rejected_by_score_threshold,
+                "retrieved_node_count": framework_result.retrieved_node_count,
+                "included_node_count": framework_result.included_node_count,
+                "omitted_node_count": framework_result.omitted_node_count,
+                "rejected_by_score_threshold": framework_result.rejected_by_score_threshold,
             },
             commit=False,
         )
@@ -289,7 +343,7 @@ def execute_session_rag_task(
             "task_id": task_id,
             "status": "success",
             "assistant_message_id": assistant_message_id,
-            "active_version_id": retrieval_context.active_version_id,
+            "active_version_id": framework_result.retrieval.active_version_id,
         }
     except (ModelCallException, BusinessException) as exc:
         cost_ms = round((time.perf_counter() - start_time) * 1000) if start_time else None
@@ -305,22 +359,22 @@ def execute_session_rag_task(
         create_call_log(
             db,
             call_type="async_session_rag",
-            stage="rag_answer_generation",
+            stage="llamaindex_query_engine",
             trace_id=trace_id,
             task_id=task_id,
             session_id=session_id,
             message_id=assistant_message_id,
-            model=(rag_prompt.model or settings.dashscope_model) if "rag_prompt" in locals() and rag_prompt else settings.dashscope_model,
+            model=(preparation.runtime_prompt.model or settings.dashscope_model) if "preparation" in locals() else settings.dashscope_model,
             cost_ms=cost_ms,
             status="error",
             error_type=getattr(exc, "error_type", ERROR_TYPE_WORKER_EXECUTION_ERROR),
             error_message=error_message,
             **(
-                get_rag_answer_prompt_identity(rag_prompt).as_call_log_fields()
-                if "rag_prompt" in locals() and rag_prompt
+                get_rag_answer_prompt_identity(preparation.runtime_prompt).as_call_log_fields()
+                if "preparation" in locals()
                 else {}
             ),
-            detail={"prompt_source": "database"} if "rag_prompt" in locals() and rag_prompt else None,
+            detail={"framework": "llamaindex", "prompt_source": "database"} if "preparation" in locals() else None,
         )
         failed_task = mark_task_error(
             db,
@@ -364,22 +418,22 @@ def execute_session_rag_task(
         create_call_log(
             db,
             call_type="async_session_rag",
-            stage="rag_answer_generation",
+            stage="llamaindex_query_engine",
             trace_id=trace_id,
             task_id=task_id,
             session_id=session_id,
             message_id=assistant_message_id,
-            model=(rag_prompt.model or settings.dashscope_model) if "rag_prompt" in locals() and rag_prompt else settings.dashscope_model,
+            model=(preparation.runtime_prompt.model or settings.dashscope_model) if "preparation" in locals() else settings.dashscope_model,
             cost_ms=cost_ms,
             status="error",
             error_type=ERROR_TYPE_WORKER_EXECUTION_ERROR,
             error_message=error_message,
             **(
-                get_rag_answer_prompt_identity(rag_prompt).as_call_log_fields()
-                if "rag_prompt" in locals() and rag_prompt
+                get_rag_answer_prompt_identity(preparation.runtime_prompt).as_call_log_fields()
+                if "preparation" in locals()
                 else {}
             ),
-            detail={"prompt_source": "database"} if "rag_prompt" in locals() and rag_prompt else None,
+            detail={"framework": "llamaindex", "prompt_source": "database"} if "preparation" in locals() else None,
         )
         mark_task_error(
             db,
@@ -418,14 +472,13 @@ def execute_session_chat_task(
             history_limit=history_limit,
             exclude_latest_matching_user_message=True,
         )
-        assistant_message = add_message(
+        assistant_message = create_or_reuse_task_assistant_message(
             db,
-            session_id,
-            "assistant",
-            "AI 异步回答生成中",
+            task_id=task_id,
+            session_id=session_id,
             trace_id=trace_id,
+            placeholder_content="AI 异步回答生成中",
             model=settings.dashscope_model,
-            status="pending",
         )
         assistant_message_id = assistant_message.message_id
         if bind_task_message(db, task_id, assistant_message_id) is None:
@@ -560,14 +613,13 @@ def execute_work_order_analysis_task(
         if task is None:
             return {"task_id": task_id, "status": "ignored"}
 
-        assistant_message = add_message(
+        assistant_message = create_or_reuse_task_assistant_message(
             db,
-            session_id,
-            "assistant",
-            "AI 工单结构化分析中",
+            task_id=task_id,
+            session_id=session_id,
             trace_id=trace_id,
+            placeholder_content="AI 工单结构化分析中",
             model=settings.dashscope_model,
-            status="pending",
         )
         assistant_message_id = assistant_message.message_id
         if bind_task_message(db, task_id, assistant_message_id) is None:

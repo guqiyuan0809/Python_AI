@@ -119,6 +119,94 @@ def ensure_knowledge_chunk_collection() -> dict[str, Any]:
         client.close()
 
 
+def ensure_session_memory_collection() -> dict[str, Any]:
+    """幂等创建会话长期记忆 collection，和企业知识库物理隔离。
+
+    知识库检索按 document/version 治理；会话记忆必须按 session/user/tenant 可见范围过滤。
+    二者不能共用 Collection，否则很容易在查询时发生资料越界或召回语义串扰。
+    """
+
+    client = create_milvus_client()
+    collection_name = settings.session_memory_collection_name
+    try:
+        if not client.has_collection(collection_name=collection_name):
+            schema = MilvusClient.create_schema(
+                auto_id=False,
+                enable_dynamic_field=False,
+                description="受治理的会话长期记忆向量索引",
+            )
+            schema.add_field(field_name="memory_id", datatype=DataType.VARCHAR, is_primary=True, max_length=64)
+            schema.add_field(field_name="session_id", datatype=DataType.VARCHAR, max_length=64)
+            schema.add_field(field_name="user_id", datatype=DataType.VARCHAR, max_length=64)
+            schema.add_field(field_name="tenant_id", datatype=DataType.VARCHAR, max_length=64)
+            schema.add_field(field_name="memory_type", datatype=DataType.VARCHAR, max_length=32)
+            schema.add_field(field_name="status", datatype=DataType.VARCHAR, max_length=32)
+            schema.add_field(field_name=VECTOR_FIELD_NAME, datatype=DataType.FLOAT_VECTOR, dim=EMBEDDING_DIMENSION)
+            client.create_collection(collection_name=collection_name, schema=schema)
+        _ensure_vector_index(client, collection_name)
+        client.load_collection(collection_name=collection_name)
+        return {
+            "collection_name": collection_name,
+            "vector_dimension": EMBEDDING_DIMENSION,
+            "vector_field": VECTOR_FIELD_NAME,
+            "metric_type": VECTOR_METRIC_TYPE,
+        }
+    finally:
+        client.close()
+
+
+def upsert_session_memory_vector(*, record: dict[str, Any]) -> None:
+    """按 memory_id 幂等写入一条已治理的长期记忆向量。"""
+
+    vector = record.get(VECTOR_FIELD_NAME)
+    if not isinstance(vector, list) or len(vector) != EMBEDDING_DIMENSION:
+        raise ValueError("会话记忆向量维度与 Milvus Collection 契约不一致")
+    ensure_session_memory_collection()
+    client = create_milvus_client()
+    try:
+        client.upsert(collection_name=settings.session_memory_collection_name, data=[record])
+        client.flush(collection_name=settings.session_memory_collection_name)
+    finally:
+        client.close()
+
+
+def search_session_memory_vectors(
+    *,
+    question_vector: list[float],
+    session_id: str,
+    user_id: str | None,
+    tenant_id: str | None,
+    top_k: int,
+) -> list[dict[str, Any]]:
+    """按可信范围过滤后检索长期记忆；过滤先于向量相似度返回结果。"""
+
+    if len(question_vector) != EMBEDDING_DIMENSION:
+        raise ValueError("会话记忆查询向量维度不匹配")
+    import json
+
+    # 第一版只允许当前 session；未来扩展跨会话记忆时必须同时收紧 user/tenant 条件。
+    filters = [f"session_id == {json.dumps(session_id, ensure_ascii=False)}", 'status == "active"']
+    if user_id is not None:
+        filters.append(f"user_id == {json.dumps(user_id, ensure_ascii=False)}")
+    if tenant_id is not None:
+        filters.append(f"tenant_id == {json.dumps(tenant_id, ensure_ascii=False)}")
+    client = create_milvus_client()
+    try:
+        client.load_collection(collection_name=settings.session_memory_collection_name)
+        result = client.search(
+            collection_name=settings.session_memory_collection_name,
+            data=[question_vector],
+            anns_field=VECTOR_FIELD_NAME,
+            filter=" and ".join(filters),
+            limit=top_k,
+            output_fields=["memory_id", "session_id", "user_id", "tenant_id", "memory_type", "status"],
+            search_params={"metric_type": VECTOR_METRIC_TYPE},
+        )
+        return result[0] if result else []
+    finally:
+        client.close()
+
+
 def upsert_chunk_vectors(
     *,
     records: list[dict[str, Any]],
@@ -179,6 +267,49 @@ def search_chunk_vectors(
             data=[question_vector],
             anns_field=VECTOR_FIELD_NAME,
             filter=f'version_id == "{escaped_version_id}"',
+            limit=top_k,
+            output_fields=["chunk_id", "document_id", "version_id"],
+            search_params={"metric_type": VECTOR_METRIC_TYPE},
+        )
+        return result[0] if result else []
+    finally:
+        client.close()
+
+
+def search_chunk_vectors_for_versions(
+    *,
+    version_ids: list[str],
+    question_vector: list[float],
+    top_k: int,
+) -> list[dict[str, Any]]:
+    """在多个*已由项目确认*的文档版本中执行一次统一向量召回。
+
+    多文档 RAG 不能简单循环调用 ``search_chunk_vectors``：那会对同一个问题重复
+    Embedding，并让每篇文档各自截断 Top-K，最终无法按全局相关度排序。本函数只接受
+    服务层从 MySQL active 指针取出的版本 ID；HTTP 调用方不能直接传 Milvus 过滤条件。
+    """
+
+    if not version_ids:
+        return []
+    if len(question_vector) != EMBEDDING_DIMENSION:
+        raise ValueError(
+            f"查询向量维度不匹配：期望 {EMBEDDING_DIMENSION}，实际 {len(question_vector)}"
+        )
+    # 使用 JSON 字符串字面量构造 Milvus ``in`` 条件，避免业务 ID 中的引号破坏过滤表达式。
+    # version_ids 来自 MySQL 状态，不是用户直接提交给 Milvus 的自由表达式。
+    import json
+
+    unique_version_ids = list(dict.fromkeys(version_ids))
+    version_literals = ", ".join(json.dumps(version_id, ensure_ascii=False) for version_id in unique_version_ids)
+    client = create_milvus_client()
+    try:
+        _ensure_vector_index(client, settings.milvus_collection_name)
+        client.load_collection(collection_name=settings.milvus_collection_name)
+        result = client.search(
+            collection_name=settings.milvus_collection_name,
+            data=[question_vector],
+            anns_field=VECTOR_FIELD_NAME,
+            filter=f"version_id in [{version_literals}]",
             limit=top_k,
             output_fields=["chunk_id", "document_id", "version_id"],
             search_params={"metric_type": VECTOR_METRIC_TYPE},

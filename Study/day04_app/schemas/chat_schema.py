@@ -19,6 +19,15 @@ class SessionChatRequest(BaseModel):
     history_limit: int = Field(6, ge=0, le=20, description="携带最近多少条历史消息")
 
 
+class LangChainSessionMemoryChatRequest(SessionChatRequest):
+    """候选链路仍沿用普通会话入参，避免客户端自行传递未授权的“记忆”。"""
+
+    include_semantic_memories: bool = Field(
+        True,
+        description="是否使用项目 Memory Service 召回已治理长期记忆；false 时仅使用摘要和短期历史",
+    )
+
+
 class SessionStreamChatRequest(BaseModel):
     session_id: str = Field(..., min_length=1, description="会话 ID")
     message: str = Field(..., min_length=1, description="用户输入的问题")
@@ -30,6 +39,18 @@ class ChatResponse(BaseModel):
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
+
+
+class LangChainSessionMemoryChatResponse(ChatResponse):
+    """候选接口的可观察结果；只返回计数和 memory_id，不返回额外记忆正文。"""
+
+    framework: Literal["langchain"] = "langchain"
+    chain_name: str
+    used_session_summary: bool
+    recent_history_message_count: int = Field(..., ge=0)
+    semantic_memory_count: int = Field(..., ge=0)
+    semantic_memory_ids: list[str] = Field(default_factory=list)
+    memory_context_estimated_tokens: int = Field(..., ge=0)
 
 
 class WorkOrderAnalysisRequest(BaseModel):
@@ -113,9 +134,50 @@ class RefreshSessionSummaryResponse(BaseModel):
     version: int | None = None
 
 
+class SessionMemoryContextPreviewRequest(BaseModel):
+    """只读观察请求：不会写 MySQL、Milvus 或触发摘要。"""
+
+    question: str = Field(..., min_length=1, max_length=2000, description="准备进入模型的当前问题")
+    history_limit: int = Field(6, ge=0, le=20, description="保留多少条最近成功消息")
+    include_semantic_memories: bool = Field(
+        True,
+        description="是否实际调用 Embedding/Milvus 观察长期记忆候选；false 时仅预览 MySQL 摘要和短期历史",
+    )
+
+
+class SessionMemoryPreviewMessageItem(BaseModel):
+    turn_no: int | None = None
+    role: str
+    content_preview: str
+
+
+class SessionMemoryPreviewItem(BaseModel):
+    memory_id: str
+    memory_type: str
+    source_summary_id: str | None = None
+    estimated_tokens: int
+    content_preview: str
+
+
+class SessionMemoryContextPreviewResponse(BaseModel):
+    session_id: str
+    summary_id: str | None = None
+    summary_version: int | None = None
+    summary_until_turn_no: int | None = None
+    summary_estimated_tokens: int = 0
+    recent_messages: list[SessionMemoryPreviewMessageItem]
+    semantic_memories: list[SessionMemoryPreviewItem]
+    semantic_memory_enabled: bool
+    semantic_memory_candidate_count: int
+    semantic_memory_estimated_tokens: int = 0
+    memory_context_estimated_tokens: int = 0
+    note: str
+
+
 class ChatMessageItem(BaseModel):
     message_id: str
     session_id: str
+    turn_no: int | None = None
     trace_id: str | None = None
     stream_id: str | None = None
     role: str
@@ -559,12 +621,27 @@ class ToolCallingResponse(BaseModel):
 
 class AgentLoopRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=1000, description="用户问题")
-    max_steps: int = Field(3, ge=1, le=5, description="Agent 最大循环步数，防止无限循环和成本失控")
+    max_steps: int = Field(3, ge=1, le=10, description="Agent 最大循环步数；硬上限仍用于防止无限循环和成本失控")
+
+
+class LangGraphAgentLoopRequest(AgentLoopRequest):
+    """LangGraph 候选 Agent 的输入。
+
+    记忆不能由客户端直接提交；如果传会话 ID，服务端才会按当前认证用户读取其摘要、短期
+    历史与经 Milvus→MySQL 复核的长期事实。
+    """
+
+    session_id: str | None = Field(None, min_length=1, description="可选会话 ID；用于加载受治理会话记忆")
+    history_limit: int = Field(6, ge=0, le=20, description="进入 Agent Prompt 的最近成功消息数")
+    include_semantic_memories: bool = Field(
+        True,
+        description="是否检索已治理的长期语义记忆；false 时仅使用会话摘要和短期历史",
+    )
 
 
 class AsyncAgentLoopTaskRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=1000, description="用户问题")
-    max_steps: int = Field(3, ge=1, le=5, description="Agent 最大循环步数")
+    max_steps: int = Field(3, ge=1, le=10, description="Agent 最大循环步数；不会因记忆摘要而无限延长")
 
 
 class AgentLoopStepItem(BaseModel):
@@ -587,6 +664,31 @@ class AgentLoopResponse(BaseModel):
     completion_tokens: int | None = Field(None, ge=0, description="模型输出 Token 数")
     total_tokens: int | None = Field(None, ge=0, description="模型调用总 Token 数")
     cost_ms: int | None = Field(None, ge=0, description="总耗时，单位毫秒")
+
+
+class AgentPlanItem(BaseModel):
+    """规划节点的结构化产物；只是模型计划，不等同于后端已授权的执行动作。"""
+
+    objective: str
+    steps: list[str] = Field(default_factory=list)
+    success_criteria: str
+    source: Literal["langchain_planner", "deterministic_security_route"]
+
+
+class LangGraphAgentLoopResponse(AgentLoopResponse):
+    """候选图额外返回编排和记忆的脱敏观察信息，便于与手写 Loop 对比。"""
+
+    framework: Literal["langgraph"] = "langgraph"
+    graph_name: str
+    plan: AgentPlanItem
+    used_session_summary: bool
+    recent_history_message_count: int = Field(..., ge=0)
+    semantic_memory_count: int = Field(..., ge=0)
+    semantic_memory_ids: list[str] = Field(default_factory=list)
+    memory_context_estimated_tokens: int = Field(..., ge=0)
+    model_retry_count: int = Field(..., ge=0, description="规划和决策模型的额外重试次数")
+    read_only_tool_retry_count: int = Field(..., ge=0, description="低风险只读工具的额外重试次数")
+    graph_recursion_limit: int = Field(..., ge=1, description="LangGraph 的运行时递归兜底；业务 max_steps 才是主要上限")
 
 
 class AgentEvalGateCompareRequest(BaseModel):

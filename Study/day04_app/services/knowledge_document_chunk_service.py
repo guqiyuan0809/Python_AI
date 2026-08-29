@@ -26,8 +26,10 @@ from day04_app.schemas.knowledge_schema import (
 from day04_app.services.text_chunker_service import (
     ChunkingConfig,
     ParentChildChunkingConfig,
-    build_parent_child_text_chunks,
-    build_text_chunks,
+)
+from day04_app.services.llamaindex_ingestion_service import (
+    build_llamaindex_parent_child_chunks,
+    build_llamaindex_text_chunks,
 )
 
 
@@ -130,7 +132,13 @@ def chunk_document_version_by_id(
     config: ChunkingConfig,
     update_document_snapshot: bool = False,
 ) -> tuple[KnowledgeDocument, list[KnowledgeTextChunk]]:
-    """只替换指定候选版本的 chunk，旧 active 版本的 MySQL 原文继续可回填。"""
+    """只替换指定候选版本的 chunk，旧 active 版本的 MySQL 原文继续可回填。
+
+    Day31 起，正式路径改由 LlamaIndex ``IngestionPipeline + SentenceSplitter`` 产出
+    标准 Node，再投影为项目的 ``KnowledgeDocumentChunk``。旧 ``build_text_chunks``
+    仍保留在 ``text_chunker_service``，用于阅读无框架实现、处理框架回退以及历史版本
+    复现；不能删除，否则老版本 ``chunk_config_json`` 将失去可解释性。
+    """
     document_id = document.document_id
     if document.status != DOCUMENT_STATUS_PARSED:
         raise BusinessException(code=40952, message="文档尚未解析成功，不能执行切块")
@@ -140,18 +148,24 @@ def chunk_document_version_by_id(
     db.commit()
 
     try:
-        chunks = build_text_chunks(
+        # legacy 对照（不再在正式路径执行）：
+        # chunks = build_text_chunks(document_id=..., segments=..., config=config)
+        #
+        # 框架替换点：Pipeline 负责编排 Node Parser；项目仍负责候选版本事务、来源快照和
+        # MySQL 持久化。当前旧 API 的“字符”字段为兼容保留，新的快照明确标为 token。
+        llama_result = build_llamaindex_text_chunks(
             document_id=document.document_id,
             segments=_load_parsed_segments(db, document.document_id),
-            config=config,
+            chunk_size=config.max_characters,
+            chunk_overlap=config.overlap_characters,
         )
+        chunks = llama_result.child_chunks
         chunk_config_json = json.dumps(
             {
-                "max_characters": config.max_characters,
-                "overlap_characters": config.overlap_characters,
-                "boundary_search_characters": config.boundary_search_characters,
-                "min_chunk_characters": config.min_chunk_characters,
-                "semantic_overflow_characters": config.semantic_overflow_characters,
+                **llama_result.framework_config,
+                # 保留调用请求，方便排查从旧 API 迁移到 token 预算时的行为差异。
+                "legacy_request_max_characters": config.max_characters,
+                "legacy_request_overlap_characters": config.overlap_characters,
             },
             ensure_ascii=False,
         )
@@ -216,7 +230,13 @@ def chunk_document_version_with_parent_child_by_id(
     version_id: str,
     config: ParentChildChunkingConfig,
 ) -> tuple[list[KnowledgeParentTextChunk], list[KnowledgeTextChunk]]:
-    """在候选版本内构建父子块；删除范围严格限制到当前版本，线上版本不会受影响。"""
+    """在候选版本内构建父子块；删除范围严格限制到当前版本，线上版本不会受影响。
+
+    框架替换点：旧 ``build_parent_child_text_chunks`` 手写父/子分组；现在由
+    LlamaIndex ``HierarchicalNodeParser`` 建立 Node relationship。本项目仍将其映射到
+    父块表、子块表与 ``parent_chunk_id``，因为引用审计和 active 版本隔离是业务契约，
+    不应依赖框架进程内 docstore。
+    """
     if document.status != DOCUMENT_STATUS_PARSED:
         raise BusinessException(code=40952, message="文档尚未解析成功，不能执行父子切块")
     version = _find_version(db, document_id=document.document_id, version_id=version_id)
@@ -224,20 +244,25 @@ def chunk_document_version_with_parent_child_by_id(
     version.error_message = None
     db.commit()
     try:
-        build_result: ParentChildTextChunkBuildResult = build_parent_child_text_chunks(
+        # legacy 对照（不再在正式路径执行）：
+        # build_result = build_parent_child_text_chunks(document_id=..., segments=..., config=config)
+        llama_result = build_llamaindex_parent_child_chunks(
             document_id=document.document_id,
             segments=_load_parsed_segments(db, document.document_id),
-            config=config,
+            parent_chunk_size=config.parent_max_characters,
+            child_chunk_size=config.child_max_characters,
+            child_chunk_overlap=config.child_overlap_characters,
+        )
+        build_result = ParentChildTextChunkBuildResult(
+            parent_chunks=llama_result.parent_chunks,
+            child_chunks=llama_result.child_chunks,
         )
         chunk_config_json = json.dumps(
             {
-                "strategy": "parent_child_contextual",
-                "parent_max_characters": config.parent_max_characters,
-                "parent_min_characters": config.parent_min_characters,
-                "child_max_characters": config.child_max_characters,
-                "child_overlap_characters": config.child_overlap_characters,
-                "child_min_characters": config.child_min_characters,
-                "child_semantic_overflow_characters": config.child_semantic_overflow_characters,
+                "strategy": "llamaindex_hierarchical_parent_child",
+                **llama_result.framework_config,
+                "legacy_request_parent_max_characters": config.parent_max_characters,
+                "legacy_request_child_max_characters": config.child_max_characters,
             },
             ensure_ascii=False,
         )

@@ -4,37 +4,34 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="5108f4fb-6914-4289-8411-3469ec54b2e8" name="更改" comment="第28">
-      <change afterPath="$PROJECT_DIR$/JingTangLing/未命名文件夹/.idea/.gitignore" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/JingTangLing/未命名文件夹/.idea/ApifoxUploaderProjectSetting.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/JingTangLing/未命名文件夹/.idea/compiler.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/JingTangLing/未命名文件夹/.idea/encodings.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/JingTangLing/未命名文件夹/.idea/jarRepositories.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/JingTangLing/未命名文件夹/.idea/misc.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/JingTangLing/未命名文件夹/.idea/modules.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/JingTangLing/未命名文件夹/.idea/vcs.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/JingTangLing/未命名文件夹/.idea/未命名文件夹.iml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/.dockerignore" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/DAY28_DEPLOYMENT.md" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/Dockerfile" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/alembic/versions/20260809_002_day27_security_audit.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/compose.deploy.yaml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/day04_app/security/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/day04_app/security/dependencies.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/day04_app/security/permissions.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/day04_app/security/principal.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/day04_app/services/security_audit_service.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/deploy/nginx/default.conf" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Study/scripts/day27_security_smoke_test.py" afterDir="false" />
+    <list default="true" id="5108f4fb-6914-4289-8411-3469ec54b2e8" name="更改" comment="第29">
+      <change afterPath="$PROJECT_DIR$/Study/day04_app/services/llamaindex_document_service.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Study/day04_app/services/llamaindex_law_retrieval_service.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Study/scripts/day31_llamaindex_adapter_smoke_test.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Study/scripts/day31_llamaindex_chunk_smoke_test.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Study/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/Study/.gitignore" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Study/day04_app/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/main.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Study/day04_app/routers/system_router.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/routers/system_router.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Study/learning_diary.md" beforeDir="false" afterPath="$PROJECT_DIR$/Study/learning_diary.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Study/run_day04.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/run_day04.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/JingTangLing/未命名文件夹/jintangling-common/src/main/java/com/jxzh/jintangling/common/controller/AiController.java" beforeDir="false" afterPath="$PROJECT_DIR$/JingTangLing/未命名文件夹/jintangling-common/src/main/java/com/jxzh/jintangling/common/controller/AiController.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/JingTangLing/未命名文件夹/jintangling-common/src/main/resources/application.yml" beforeDir="false" afterPath="$PROJECT_DIR$/JingTangLing/未命名文件夹/jintangling-common/src/main/resources/application.yml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/celery_app.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/celery_app.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/models.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/models.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/routers/chat_router.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/routers/chat_router.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/routers/knowledge_router.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/routers/knowledge_router.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/schemas/chat_schema.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/schemas/chat_schema.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/schemas/knowledge_schema.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/schemas/knowledge_schema.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/agent_loop_eval_runner.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/agent_loop_eval_runner.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/agent_loop_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/agent_loop_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/async_task_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/async_task_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/knowledge_document_chunk_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/knowledge_document_chunk_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/knowledge_milvus_search_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/knowledge_milvus_search_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/knowledge_vector_index_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/knowledge_vector_index_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/milvus_vector_store_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/milvus_vector_store_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/session_rag_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/session_rag_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/session_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/session_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/services/tool_calling_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/services/tool_calling_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/tasks/ai_tasks.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/tasks/ai_tasks.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/day04_app/tasks/maintenance_tasks.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/day04_app/tasks/maintenance_tasks.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Study/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/Study/requirements.txt" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Study/settings.py" beforeDir="false" afterPath="$PROJECT_DIR$/Study/settings.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/ai-task-web/src/api/task.js" beforeDir="false" afterPath="$PROJECT_DIR$/ai-task-web/src/api/task.js" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/ai-task-web/src/views/TaskConsoleView.vue" beforeDir="false" afterPath="$PROJECT_DIR$/ai-task-web/src/views/TaskConsoleView.vue" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -42,7 +39,7 @@
     <option name="LAST_RESOLUTION" value="IGNORE" />
   </component>
   <component name="EmbeddingIndexingInfo">
-    <option name="cachedIndexableFilesCount" value="9497" />
+    <option name="cachedIndexableFilesCount" value="9524" />
   </component>
   <component name="FileTemplateManagerImpl">
     <option name="RECENT_TEMPLATES">
@@ -76,23 +73,23 @@
   </component>
   <component name="NextEditCompletionFeaturesState">
     <decayedCancelled>
-      <entry key="MS100" value="1.0902474554501094" />
-      <entry key="MS500" value="1.7638259763105086" />
-      <entry key="S2" value="3.5819608106990026" />
-      <entry key="S5" value="4.783691323128032" />
-      <entry key="S10" value="5.339809310847236" />
-      <entry key="S30" value="5.767175836509446" />
-      <entry key="S60" value="5.881911520149691" />
-      <entry key="M2" value="5.940530299093254" />
-      <entry key="M5" value="5.976109187047747" />
-      <entry key="M10" value="5.988099907620814" />
-      <entry key="M15" value="5.993711328843882" />
-      <entry key="M30" value="6.047403564633072" />
-      <entry key="H1" value="6.321337403245853" />
-      <entry key="H2" value="6.991217659869276" />
-      <entry key="H4" value="8.137408213744466" />
-      <entry key="D1" value="132.08078773909716" />
-      <entry key="W1" value="482.30132663743336" />
+      <entry key="MS100" value="1.0" />
+      <entry key="MS500" value="1.0" />
+      <entry key="S2" value="1.0" />
+      <entry key="S5" value="1.0" />
+      <entry key="S10" value="1.0" />
+      <entry key="S30" value="1.0" />
+      <entry key="S60" value="1.0" />
+      <entry key="M2" value="1.0" />
+      <entry key="M5" value="1.000000000000001" />
+      <entry key="M10" value="1.0000000787229737" />
+      <entry key="M15" value="1.000033386492161" />
+      <entry key="M30" value="1.0142727098111752" />
+      <entry key="H1" value="1.3070985131144495" />
+      <entry key="H2" value="2.5409452003588626" />
+      <entry key="H4" value="4.820351196657814" />
+      <entry key="D1" value="117.44187267244526" />
+      <entry key="W1" value="474.6961097410126" />
     </decayedCancelled>
     <decayedSelected>
       <entry key="MS100" value="0.0" />
@@ -103,34 +100,34 @@
       <entry key="S30" value="0.0" />
       <entry key="S60" value="0.0" />
       <entry key="M2" value="0.0" />
-      <entry key="M5" value="5.956664456046954E-177" />
-      <entry key="M10" value="1.7362701245740443E-88" />
-      <entry key="M15" value="5.479219051613166E-59" />
-      <entry key="M30" value="2.0056756251081937E-29" />
-      <entry key="H1" value="2.0567136984218594E-14" />
-      <entry key="H2" value="1.0948784641980735E-6" />
-      <entry key="H4" value="0.01102202426391761" />
-      <entry key="D1" value="33.197106739751405" />
-      <entry key="W1" value="135.8597004548629" />
+      <entry key="M5" value="1.0295040102766734E-192" />
+      <entry key="M10" value="2.282599646046256E-96" />
+      <entry key="M15" value="3.0520639696882954E-64" />
+      <entry key="M30" value="4.733672206024477E-32" />
+      <entry key="H1" value="9.991773550374881E-16" />
+      <entry key="H2" value="2.413238718151783E-7" />
+      <entry key="H4" value="0.005174621019396163" />
+      <entry key="D1" value="29.266431115775916" />
+      <entry key="W1" value="133.43569262961444" />
     </decayedSelected>
     <decayedShown>
-      <entry key="MS100" value="0.15318036107760186" />
-      <entry key="MS500" value="1.282880890993053" />
-      <entry key="S2" value="3.2864526886272434" />
-      <entry key="S5" value="4.6192947761508565" />
-      <entry key="S10" value="5.246972493088355" />
-      <entry key="S30" value="5.733511840093355" />
-      <entry key="S60" value="5.864715100653194" />
-      <entry key="M2" value="5.931839036099452" />
-      <entry key="M5" value="5.972610095309882" />
-      <entry key="M10" value="5.986346575427192" />
-      <entry key="M15" value="5.992541585682596" />
-      <entry key="M30" value="6.046817990730783" />
-      <entry key="H1" value="6.321043071344953" />
-      <entry key="H2" value="6.99106726556734" />
-      <entry key="H4" value="8.148346600937892" />
-      <entry key="D1" value="165.27681081656596" />
-      <entry key="W1" value="618.1604020872618" />
+      <entry key="MS100" value="0.9138314502294005" />
+      <entry key="MS500" value="0.9821395952633915" />
+      <entry key="S2" value="0.995504677670617" />
+      <entry key="S5" value="0.9981994402866303" />
+      <entry key="S10" value="0.9990993145261537" />
+      <entry key="S30" value="0.9996996813264409" />
+      <entry key="S60" value="0.999849829387614" />
+      <entry key="M2" value="0.9999249118746938" />
+      <entry key="M5" value="0.9999699640732643" />
+      <entry key="M10" value="0.9999850606237838" />
+      <entry key="M15" value="1.0000233679005748" />
+      <entry key="M30" value="1.0142663217252397" />
+      <entry key="H1" value="1.3070817110725554" />
+      <entry key="H2" value="2.5409108002009906" />
+      <entry key="H4" value="4.825485925979576" />
+      <entry key="D1" value="146.70734833177067" />
+      <entry key="W1" value="608.131188502029" />
     </decayedShown>
   </component>
   <component name="ProjectColorInfo">{
@@ -145,35 +142,35 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "Celery.Celery day04_app.celery_app.executor": "Run",
-    "ModuleVcsDetector.initialDetectionPerformed": "true",
-    "Python.DemoClass.executor": "Run",
-    "Python.day01.executor": "Run",
-    "Python.day02.executor": "Run",
-    "Python.day03.executor": "Run",
-    "Python.day04_fastapi.executor": "Run",
-    "Python.ljh1.executor": "Run",
-    "Python.run_day04.executor": "Run",
-    "RunOnceActivity.MCP Project settings loaded": "true",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
-    "RunOnceActivity.git.unshallow": "true",
-    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
-    "codeWithMe.voiceChat.enabledByDefault": "false",
-    "git-widget-placeholder": "master",
-    "ignore.virus.scanning.warn.message": "true",
-    "node.js.detected.package.eslint": "true",
-    "node.js.detected.package.tslint": "true",
-    "node.js.selected.package.eslint": "(autodetect)",
-    "node.js.selected.package.tslint": "(autodetect)",
-    "nodejs_package_manager_path": "npm",
-    "settings.editor.selected.configurable": "vcs.Git",
-    "ts.external.directory.path": "D:\\python\\PyCharm 2026.1.2\\plugins\\javascript-plugin\\jsLanguageServicesImpl\\external",
-    "vue.rearranger.settings.migration": "true"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;Celery.Celery day04_app.celery_app.executor&quot;: &quot;Run&quot;,
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;Python.DemoClass.executor&quot;: &quot;Run&quot;,
+    &quot;Python.day01.executor&quot;: &quot;Run&quot;,
+    &quot;Python.day02.executor&quot;: &quot;Run&quot;,
+    &quot;Python.day03.executor&quot;: &quot;Run&quot;,
+    &quot;Python.day04_fastapi.executor&quot;: &quot;Run&quot;,
+    &quot;Python.ljh1.executor&quot;: &quot;Run&quot;,
+    &quot;Python.run_day04.executor&quot;: &quot;Run&quot;,
+    &quot;RunOnceActivity.MCP Project settings loaded&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.typescript.service.memoryLimit.init&quot;: &quot;true&quot;,
+    &quot;codeWithMe.voiceChat.enabledByDefault&quot;: &quot;false&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;master&quot;,
+    &quot;ignore.virus.scanning.warn.message&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;vcs.Git&quot;,
+    &quot;ts.external.directory.path&quot;: &quot;D:\\python\\PyCharm 2026.1.2\\plugins\\javascript-plugin\\jsLanguageServicesImpl\\external&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
   }
-}]]></component>
+}</component>
   <component name="RunManager" selected="Python.run_day04">
     <configuration name="day02" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="Pythoncode" />
@@ -349,7 +346,12 @@
       <workItem from="1786342821615" duration="5162000" />
       <workItem from="1786411273881" duration="1389000" />
       <workItem from="1786962109547" duration="1656000" />
-      <workItem from="1787008078700" duration="12066000" />
+      <workItem from="1787008078700" duration="12840000" />
+      <workItem from="1787094721312" duration="4153000" />
+      <workItem from="1787181157330" duration="17243000" />
+      <workItem from="1787445521930" duration="2503000" />
+      <workItem from="1787790376341" duration="20142000" />
+      <workItem from="1787989009198" duration="609000" />
     </task>
     <task id="LOCAL-00001" summary="111">
       <option name="closed" value="true" />
@@ -599,7 +601,15 @@
       <option name="project" value="LOCAL" />
       <updated>1787023311126</updated>
     </task>
-    <option name="localTasksCounter" value="32" />
+    <task id="LOCAL-00032" summary="第29">
+      <option name="closed" value="true" />
+      <created>1787038968893</created>
+      <option name="number" value="00032" />
+      <option name="presentableId" value="LOCAL-00032" />
+      <option name="project" value="LOCAL" />
+      <updated>1787038968893</updated>
+    </task>
+    <option name="localTasksCounter" value="33" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -629,7 +639,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="111" />
     <MESSAGE value="11" />
     <MESSAGE value="会话以及多轮对话的实现" />
     <MESSAGE value="添加pending中间状态消息到消息表中在调用模型之前，在调用模型之后更新该pending消息" />
@@ -654,13 +663,14 @@
     <MESSAGE value="第26" />
     <MESSAGE value="第27-1" />
     <MESSAGE value="第28" />
-    <option name="LAST_COMMIT_MESSAGE" value="第28" />
+    <MESSAGE value="第29" />
+    <option name="LAST_COMMIT_MESSAGE" value="第29" />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/Pythoncode$DemoClass.coverage" NAME="DemoClass 覆盖结果" MODIFIED="1779969206789" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/Pythoncode$day02.coverage" NAME="day02 覆盖结果" MODIFIED="1780649030673" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/Study" />
     <SUITE FILE_PATH="coverage/Pythoncode$Celery_day04_app_celery_app.coverage" NAME="Celery day04_app.celery_app 覆盖结果" MODIFIED="1785724327924" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="" />
-    <SUITE FILE_PATH="coverage/Pythoncode$run_day04.coverage" NAME="run_day04 覆盖结果" MODIFIED="1787038028442" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/Study" />
+    <SUITE FILE_PATH="coverage/Pythoncode$run_day04.coverage" NAME="run_day04 覆盖结果" MODIFIED="1787315090980" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/Study" />
     <SUITE FILE_PATH="coverage/Pythoncode$day01.coverage" NAME="day01 覆盖结果" MODIFIED="1780408580009" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/Study" />
     <SUITE FILE_PATH="coverage/Pythoncode$ljh1.coverage" NAME="ljh1 覆盖结果" MODIFIED="1780045234815" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/Pythoncode$day04_fastapi.coverage" NAME="day04_fastapi 覆盖结果" MODIFIED="1780748592809" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/Study" />

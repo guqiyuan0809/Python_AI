@@ -47,6 +47,8 @@ from day04_app.schemas.chat_schema import (
     AiPromptRollbackAuditPageResponse,
     AgentLoopRequest,
     AgentLoopResponse,
+    LangGraphAgentLoopRequest,
+    LangGraphAgentLoopResponse,
     AgentEvalGateCompareRequest,
     AsyncAgentLoopTaskRequest,
     AsyncAgentLoopEvalTaskRequest,
@@ -69,18 +71,25 @@ from day04_app.schemas.chat_schema import (
     RollbackPromptVersionRequest,
     RefreshSessionSummaryResponse,
     SessionChatRequest,
+    LangChainSessionMemoryChatRequest,
+    LangChainSessionMemoryChatResponse,
     SessionListResponse,
     SessionMessagesResponse,
     SessionMessagesPageResponse,
     SessionStatusResponse,
     SessionStreamChatRequest,
+    SessionMemoryContextPreviewRequest,
+    SessionMemoryContextPreviewResponse,
+    SessionMemoryPreviewItem,
+    SessionMemoryPreviewMessageItem,
     SessionTitleResponse,
     UpdateSessionTitleRequest,
     WorkOrderAnalysisRequest,
     WorkOrderAnalysisParseTestRequest,
     WorkOrderAnalysisResponse,
 )
-from day04_app.services.agent_loop_service import run_agent_loop
+from day04_app.services.agent_loop_service import run_agent_loop, run_langchain_agent_loop
+from day04_app.services.langgraph_agent_service import run_langgraph_agent_loop
 from day04_app.services.agent_loop_eval_gate_service import (
     create_agent_eval_gate_decision,
     list_agent_eval_gate_decisions,
@@ -151,6 +160,7 @@ from day04_app.services.session_service import (
     generate_session_title,
     get_session,
     get_session_for_actor,
+    get_latest_session_summary,
     get_session_messages,
     get_session_messages_page,
     list_sessions,
@@ -159,6 +169,15 @@ from day04_app.services.session_service import (
     should_refresh_summary_for_session,
     update_message,
     update_session_title,
+)
+from day04_app.services.agent_memory_service import (
+    build_governed_memory_context,
+)
+from day04_app.services.session_service import estimate_text_tokens
+from day04_app.services.langchain_session_memory_chain import (
+    LANGCHAIN_SESSION_MEMORY_CHAIN_NAME,
+    build_langchain_session_memory_chain,
+    get_langchain_session_memory_prompt_identity,
 )
 from day04_app.services.outbox_dispatcher import dispatch_outbox_event
 from day04_app.services.structured_result_service import create_structured_result
@@ -215,6 +234,7 @@ def to_message_item(message) -> ChatMessageItem:
     return ChatMessageItem(
         message_id=message.message_id,
         session_id=message.session_id,
+        turn_no=message.turn_no,
         trace_id=message.trace_id,
         stream_id=message.stream_id,
         role=message.role,
@@ -599,6 +619,122 @@ def agent_loop_chat(
     return success(
         result,
         message="Agent Loop 执行完成",
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.post(
+    "/agent-loop/langchain-candidate",
+    response_model=ApiResponse[AgentLoopResponse],
+    summary="Day31 候选链路：LangChain Runnable 与 StructuredTool 编排的受控 Agent Loop",
+    dependencies=[Depends(require_permissions(PERMISSION_TOOL_EXECUTE))],
+)
+def langchain_candidate_agent_loop_chat(
+    request_body: AgentLoopRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[AgentLoopResponse]:
+    """候选入口，不替换 /agent-loop；确认 Harness 无回退前不能升级为默认。"""
+    result = run_langchain_agent_loop(
+        db,
+        message=request_body.message,
+        max_steps=request_body.max_steps,
+        trace_id=request.state.trace_id,
+        principal=request.state.principal,
+    )
+    return success(
+        result,
+        message="LangChain 候选 Agent Loop 执行完成，工具仍经过项目策略层",
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.post(
+    "/agent-loop/langgraph-candidate",
+    response_model=ApiResponse[LangGraphAgentLoopResponse],
+    summary="Day32 候选链路：LangGraph 编排规划、记忆、决策、工具、观察与条件循环",
+    dependencies=[Depends(require_permissions(PERMISSION_TOOL_EXECUTE))],
+)
+def langgraph_candidate_agent_loop_chat(
+    request_body: LangGraphAgentLoopRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[LangGraphAgentLoopResponse]:
+    """显式图候选入口：不替换已通过 Harness 的手写 Agent Loop。"""
+
+    assistant_message = None
+    if request_body.session_id:
+        # 只有通过归属校验的会话才允许作为 LangGraph 的短期/长期记忆来源。
+        get_authorized_session(db, request, request_body.session_id)
+        # 这里和普通会话聊天采用相同的“用户消息 + assistant 占位”落库方式：本轮
+        # Agent 结果才会进入下次会话的短期历史，并按阈值被总结进长期会话摘要。
+        # 规划过程和各 step 不写进 chat_message，完整工具事实仍在 Agent steps/调用日志中。
+        add_message(
+            db,
+            request_body.session_id,
+            "user",
+            request_body.message,
+            trace_id=request.state.trace_id,
+        )
+        assistant_message = add_message(
+            db,
+            request_body.session_id,
+            "assistant",
+            "LangGraph Agent 回答生成中",
+            trace_id=request.state.trace_id,
+            model=settings.dashscope_model,
+            status="pending",
+        )
+    actor_id = request.state.principal.actor_id if settings.security_enabled else None
+    raw_tenant_id = (
+        request.state.principal.data_scope.get("tenant_id")
+        if settings.security_enabled
+        else None
+    )
+    tenant_id = str(raw_tenant_id) if raw_tenant_id is not None else None
+    try:
+        result = run_langgraph_agent_loop(
+            db,
+            message=request_body.message,
+            max_steps=request_body.max_steps,
+            trace_id=request.state.trace_id,
+            session_id=request_body.session_id,
+            message_id=(assistant_message.message_id if assistant_message else None),
+            actor_id=actor_id,
+            tenant_id=tenant_id,
+            history_limit=request_body.history_limit,
+            include_semantic_memories=request_body.include_semantic_memories,
+            principal=request.state.principal,
+        )
+    except ModelCallException as exc:
+        # 会话模式中模型最终失败不能遗留 pending 占位消息；失败轨迹仍可经 trace_id
+        # 查询到图节点日志。没有 session_id 时维持纯 Agent 请求的原有语义。
+        if assistant_message is not None:
+            update_message(
+                db,
+                assistant_message.message_id,
+                content=exc.message,
+                status="error",
+                error_message=exc.message,
+            )
+        raise
+    if assistant_message is not None:
+        update_message(
+            db,
+            assistant_message.message_id,
+            content=result.answer,
+            status="success",
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            total_tokens=result.total_tokens,
+        )
+        # 正常回答落库后才检查摘要阈值；本轮 user/assistant 对话被视为一个会话轮次，
+        # 不会把内部 Agent step 误算为多轮用户会话。
+        if should_refresh_summary_for_session(db, request_body.session_id):
+            refresh_session_summary(db, request_body.session_id)
+    return success(
+        result,
+        message="LangGraph 候选 Agent 执行完成；工具仍经过项目权限与策略层",
         trace_id=request.state.trace_id,
     )
 
@@ -1620,6 +1756,261 @@ def refresh_summary(
         ),
         message="会话摘要刷新成功",
         trace_id=request.state.trace_id,
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/memory-context-preview",
+    response_model=ApiResponse[SessionMemoryContextPreviewResponse],
+    summary="预览本次会话将注入模型的受治理记忆上下文",
+)
+def preview_session_memory_context(
+    session_id: str,
+    request_body: SessionMemoryContextPreviewRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[SessionMemoryContextPreviewResponse]:
+    """开发观察入口：显示 Prompt 的记忆组成，但默认只返回正文预览。
+
+    这个接口没有调用聊天模型、没有写摘要、没有写 Milvus；当
+    ``include_semantic_memories=true`` 时仅会发生 query Embedding + Milvus 搜索，用来
+    验证长期记忆的“先向量候选、再 MySQL 复核”的读取链路。
+    """
+
+    get_authorized_session(db, request, session_id)
+    actor_id = request.state.principal.actor_id if settings.security_enabled else None
+    # data_scope 是 Java 可信服务透传的业务范围；当前项目还未启用多租户记忆，
+    # 预留 tenant_id 读取位置，未来只能由可信 Principal 提供而不能接收 HTTP body。
+    raw_tenant_id = request.state.principal.data_scope.get("tenant_id") if settings.security_enabled else None
+    tenant_id = str(raw_tenant_id) if raw_tenant_id is not None else None
+    try:
+        context = build_governed_memory_context(
+            db,
+            session_id=session_id,
+            current_question=request_body.question,
+            actor_id=actor_id,
+            tenant_id=tenant_id,
+            history_limit=request_body.history_limit,
+            include_semantic_memories=request_body.include_semantic_memories,
+            # 这是诊断接口；若 Milvus/Embedding 出错应显式暴露 5xx，不能伪装成“没有记忆”。
+            suppress_retrieval_errors=False,
+        )
+    except Exception as exc:
+        create_call_log(
+            db,
+            call_type="session_memory",
+            stage="semantic_memory_retrieval",
+            trace_id=request.state.trace_id,
+            session_id=session_id,
+            status="error",
+            error_type=type(exc).__name__,
+            error_message=f"长期记忆预览失败：{type(exc).__name__}",
+        )
+        raise
+    latest_summary = get_latest_session_summary(db, session_id)
+    recent_messages = context["recent_history"]
+    semantic_memories = context["semantic_memories"]
+    summary_text = context["session_summary"]
+    semantic_tokens = sum(estimate_text_tokens(item["content"]) for item in semantic_memories)
+    summary_tokens = estimate_text_tokens(summary_text) if summary_text else 0
+    recent_tokens = sum(estimate_text_tokens(item["content"]) for item in recent_messages)
+    return success(
+        SessionMemoryContextPreviewResponse(
+            session_id=session_id,
+            summary_id=latest_summary.summary_id if latest_summary else None,
+            summary_version=latest_summary.version if latest_summary else None,
+            summary_until_turn_no=(latest_summary.summary_until_turn_no if latest_summary else None),
+            summary_estimated_tokens=summary_tokens,
+            recent_messages=[
+                SessionMemoryPreviewMessageItem(
+                    turn_no=item["turn_no"],
+                    role=item["role"],
+                    content_preview=item["content"][:160],
+                )
+                for item in recent_messages
+            ],
+            semantic_memories=[
+                SessionMemoryPreviewItem(
+                    memory_id=item["memory_id"],
+                    memory_type=item["memory_type"],
+                    source_summary_id=item.get("source_summary_id"),
+                    estimated_tokens=estimate_text_tokens(item["content"]),
+                    content_preview=item["content"][:160],
+                )
+                for item in semantic_memories
+            ],
+            semantic_memory_enabled=request_body.include_semantic_memories,
+            semantic_memory_candidate_count=len(semantic_memories),
+            semantic_memory_estimated_tokens=semantic_tokens,
+            memory_context_estimated_tokens=summary_tokens + recent_tokens + semantic_tokens,
+            note=(
+                "语义记忆已完成 Milvus 候选召回并由 MySQL active/范围/预算复核；"
+                "实际聊天链路将在 LangChain Memory Runnable 候选入口接入。"
+                if request_body.include_semantic_memories
+                else "当前只预览 MySQL 摘要与最近原始轮次，未调用 Embedding 或 Milvus。"
+            ),
+        ),
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.post(
+    "/sessions/chat/langchain-memory-candidate",
+    response_model=ApiResponse[LangChainSessionMemoryChatResponse],
+    summary="Day32 候选链路：LangChain 组装受治理的会话记忆后调用聊天模型",
+)
+def langchain_session_memory_candidate_chat(
+    request_body: LangChainSessionMemoryChatRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[LangChainSessionMemoryChatResponse]:
+    """将项目治理后的会话记忆交给 LangChain 进行 Prompt 编排。
+
+    这是与 ``/sessions/chat`` 并行的候选接口，方便先观察和评测 Prompt 组成。它刻意
+    复用原会话的消息落库、异常处理与摘要刷新策略；唯一替换点是模型调用前的消息组装。
+    """
+
+    trace_id = request.state.trace_id
+    get_authorized_session(db, request, request_body.session_id)
+    actor_id = request.state.principal.actor_id if settings.security_enabled else None
+    raw_tenant_id = (
+        request.state.principal.data_scope.get("tenant_id")
+        if settings.security_enabled
+        else None
+    )
+    tenant_id = str(raw_tenant_id) if raw_tenant_id is not None else None
+
+    # 1) 项目 Memory Service 决定“能取什么”：摘要、短期成功消息以及 Milvus 命中后
+    #    回 MySQL 复核的长期记忆。LangChain 不会也不能在这里自行查询存储。
+    memory_context = build_governed_memory_context(
+        db,
+        session_id=request_body.session_id,
+        current_question=request_body.message,
+        actor_id=actor_id,
+        tenant_id=tenant_id,
+        history_limit=request_body.history_limit,
+        include_semantic_memories=request_body.include_semantic_memories,
+        # 长期记忆不可用时回退到 MySQL 摘要 + 最近轮次，保障普通聊天可用。
+        suppress_retrieval_errors=True,
+    )
+    semantic_memories = memory_context["semantic_memories"]
+    recent_history = memory_context["recent_history"]
+    summary_text = memory_context["session_summary"]
+    memory_context_tokens = (
+        (estimate_text_tokens(summary_text) if summary_text else 0)
+        + sum(estimate_text_tokens(item["content"]) for item in recent_history)
+        + sum(estimate_text_tokens(item["content"]) for item in semantic_memories)
+    )
+    log_detail = {
+        # 只记录可观察元数据，不能把会话摘要、长期记忆或用户原文写到 ai_call_log。
+        "framework": "langchain",
+        "chain_name": LANGCHAIN_SESSION_MEMORY_CHAIN_NAME,
+        "used_session_summary": bool(summary_text),
+        "recent_history_message_count": len(recent_history),
+        "semantic_memory_enabled": request_body.include_semantic_memories,
+        "semantic_memory_count": len(semantic_memories),
+        "semantic_memory_ids": [item["memory_id"] for item in semantic_memories],
+        "memory_context_estimated_tokens": memory_context_tokens,
+    }
+    prompt_identity = get_langchain_session_memory_prompt_identity()
+
+    # 与旧接口一致：用户消息和 assistant 占位先落库，模型失败也可从会话与 trace 排查。
+    add_message(db, request_body.session_id, "user", request_body.message, trace_id=trace_id)
+    assistant_message = add_message(
+        db,
+        request_body.session_id,
+        "assistant",
+        "AI 回答生成中",
+        trace_id=trace_id,
+        model=settings.dashscope_model,
+        status="pending",
+    )
+
+    # 2) 仅在此处进入 LangChain：payload 的 memory_context 会被转换为
+    #    ChatPromptTemplate + MessagesPlaceholder("recent_history")，再到项目 Qwen Adapter。
+    start_time = time.perf_counter()
+    try:
+        execution = build_langchain_session_memory_chain().invoke(
+            {
+                "current_question": request_body.message,
+                "memory_context": memory_context,
+            }
+        )
+    except (ModelCallException, ValueError) as exc:
+        cost_ms = round((time.perf_counter() - start_time) * 1000)
+        error_message = exc.message if isinstance(exc, ModelCallException) else str(exc)
+        error_type = exc.error_type if isinstance(exc, ModelCallException) else type(exc).__name__
+        update_message(
+            db,
+            assistant_message.message_id,
+            content=error_message,
+            status="error",
+            error_message=error_message,
+        )
+        create_call_log(
+            db,
+            call_type="session_chat",
+            stage="langchain_memory_candidate_model",
+            trace_id=trace_id,
+            session_id=request_body.session_id,
+            message_id=assistant_message.message_id,
+            model=settings.dashscope_model,
+            cost_ms=cost_ms,
+            status="error",
+            error_type=error_type,
+            error_message=error_message,
+            detail=log_detail,
+            **prompt_identity,
+        )
+        raise
+
+    cost_ms = round((time.perf_counter() - start_time) * 1000)
+    prompt_tokens = execution.usage.prompt_tokens or 0
+    completion_tokens = execution.usage.completion_tokens or 0
+    total_tokens = execution.usage.total_tokens or 0
+    update_message(
+        db,
+        assistant_message.message_id,
+        content=execution.answer,
+        status="success",
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+    )
+    create_call_log(
+        db,
+        call_type="session_chat",
+        stage="langchain_memory_candidate_model",
+        trace_id=trace_id,
+        session_id=request_body.session_id,
+        message_id=assistant_message.message_id,
+        model=execution.model,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        cost_ms=cost_ms,
+        status="success",
+        detail=log_detail,
+        **prompt_identity,
+    )
+    if should_refresh_summary_for_session(db, request_body.session_id):
+        refresh_session_summary(db, request_body.session_id)
+
+    return success(
+        LangChainSessionMemoryChatResponse(
+            answer=execution.answer,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            chain_name=LANGCHAIN_SESSION_MEMORY_CHAIN_NAME,
+            used_session_summary=bool(summary_text),
+            recent_history_message_count=len(recent_history),
+            semantic_memory_count=len(semantic_memories),
+            semantic_memory_ids=[item["memory_id"] for item in semantic_memories],
+            memory_context_estimated_tokens=memory_context_tokens,
+        ),
+        message="LangChain 受治理会话记忆候选链路调用成功",
+        trace_id=trace_id,
     )
 
 

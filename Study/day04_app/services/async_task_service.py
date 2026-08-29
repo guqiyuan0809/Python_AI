@@ -14,6 +14,10 @@ from sqlalchemy.orm import Session
 from day04_app.common.exceptions import BusinessException, ERROR_TYPE_TASK_TIMEOUT
 from day04_app.models import AiAsyncTask, AiTaskOutbox, ChatMessage
 from day04_app.security.principal import SecurityPrincipal
+from day04_app.services.session_service import (
+    create_pending_session_turn,
+    set_session_turn_status_for_task,
+)
 from day04_app.utils.snowflake_id import next_snowflake_id
 
 
@@ -314,14 +318,6 @@ def create_async_session_chat_task(
     max_retries: int,
 ) -> tuple[AiAsyncTask, AiTaskOutbox]:
     """一次事务写入用户消息、任务记录和 Outbox 件事。"""
-    user_message = ChatMessage(
-        message_id=uuid4().hex,
-        session_id=session_id,
-        trace_id=trace_id,
-        role="user",
-        content=input_text,
-        status="success",
-    )
     task = AiAsyncTask(
         task_id=next_snowflake_id(),
         trace_id=trace_id,
@@ -332,10 +328,28 @@ def create_async_session_chat_task(
         max_retries=max_retries,
         status=TASK_STATUS_PENDING,
     )
+    user_message = ChatMessage(
+        message_id=uuid4().hex,
+        session_id=session_id,
+        trace_id=trace_id,
+        role="user",
+        content=input_text,
+        status="success",
+    )
+    # 同一事务：用户输入 + 任务 + 轮次。Worker 以后只能按 task_id 找回该轮次。
+    db.add_all([user_message, task])
+    turn = create_pending_session_turn(
+        db,
+        session_id=session_id,
+        trace_id=trace_id,
+        user_message_id=user_message.message_id,
+        task_id=task.task_id,
+    )
+    user_message.turn_no = turn.turn_no
     outbox_event = _create_outbox_event(task, history_limit)
 
-    # 三类业务数据一起提交，避免出现“有任务但没有用户问题”的不完整记录。
-    db.add_all([user_message, task, outbox_event])
+    # 任务、问题、轮次和 Outbox 事件要么一起提交，要么一起回滚。
+    db.add(outbox_event)
     db.commit()
     db.refresh(task)
     db.refresh(outbox_event)
@@ -357,14 +371,6 @@ def create_async_session_rag_task(
     score_threshold: float | None = None,
 ) -> tuple[AiAsyncTask, AiTaskOutbox]:
     """一次事务提交用户消息、RAG 任务和 Outbox 投递事件。"""
-    user_message = ChatMessage(
-        message_id=uuid4().hex,
-        session_id=session_id,
-        trace_id=trace_id,
-        role="user",
-        content=input_text,
-        status="success",
-    )
     task = AiAsyncTask(
         task_id=next_snowflake_id(),
         trace_id=trace_id,
@@ -375,6 +381,23 @@ def create_async_session_rag_task(
         max_retries=max_retries,
         status=TASK_STATUS_PENDING,
     )
+    user_message = ChatMessage(
+        message_id=uuid4().hex,
+        session_id=session_id,
+        trace_id=trace_id,
+        role="user",
+        content=input_text,
+        status="success",
+    )
+    db.add_all([user_message, task])
+    turn = create_pending_session_turn(
+        db,
+        session_id=session_id,
+        trace_id=trace_id,
+        user_message_id=user_message.message_id,
+        task_id=task.task_id,
+    )
+    user_message.turn_no = turn.turn_no
     outbox_event = _create_session_rag_outbox_event(
         task,
         document_id=document_id,
@@ -386,7 +409,7 @@ def create_async_session_rag_task(
     )
 
     # 用户看到的问题、可轮询任务和待投递消息必须同时存在或同时回滚。
-    db.add_all([user_message, task, outbox_event])
+    db.add(outbox_event)
     db.commit()
     db.refresh(task)
     db.refresh(outbox_event)
@@ -561,14 +584,6 @@ def create_async_work_order_analysis_task(
     max_retries: int,
 ) -> tuple[AiAsyncTask, AiTaskOutbox]:
     """一次事务写入用户消息、结构化分析任务和 Outbox 事件。"""
-    user_message = ChatMessage(
-        message_id=uuid4().hex,
-        session_id=session_id,
-        trace_id=trace_id,
-        role="user",
-        content=content,
-        status="success",
-    )
     task = AiAsyncTask(
         task_id=next_snowflake_id(),
         trace_id=trace_id,
@@ -579,10 +594,27 @@ def create_async_work_order_analysis_task(
         max_retries=max_retries,
         status=TASK_STATUS_PENDING,
     )
+    user_message = ChatMessage(
+        message_id=uuid4().hex,
+        session_id=session_id,
+        trace_id=trace_id,
+        role="user",
+        content=content,
+        status="success",
+    )
+    db.add_all([user_message, task])
+    turn = create_pending_session_turn(
+        db,
+        session_id=session_id,
+        trace_id=trace_id,
+        user_message_id=user_message.message_id,
+        task_id=task.task_id,
+    )
+    user_message.turn_no = turn.turn_no
     outbox_event = _create_work_order_analysis_outbox_event(task, business_id)
 
-    # 结构化分析也走本地消息表，保证任务记录和 MQ 投递事件在同一个数据库事务中提交。
-    db.add_all([user_message, task, outbox_event])
+    # 结构化分析也走本地消息表，轮次、任务和 MQ 投递事件同一个事务提交。
+    db.add(outbox_event)
     db.commit()
     db.refresh(task)
     db.refresh(outbox_event)
@@ -729,6 +761,13 @@ def mark_task_error(
     task.error_type = error_type
     task.error_message = error_message
     task.cost_ms = cost_ms
+    # system_* 任务没有会话轮次，函数会安全 no-op；会话类任务则不再留下永久 pending。
+    set_session_turn_status_for_task(
+        db,
+        task_id=task_id,
+        status=TASK_STATUS_ERROR,
+        commit=False,
+    )
     db.commit()
     db.refresh(task)
     return task
@@ -758,6 +797,12 @@ def prepare_task_retry(
     task.error_type = None
     task.error_message = None
     task.retry_count += 1
+    set_session_turn_status_for_task(
+        db,
+        task_id=task_id,
+        status=TASK_STATUS_PENDING,
+        commit=False,
+    )
     outbox_event = _create_outbox_event(task, history_limit, delay_seconds)
 
     db.add(outbox_event)
@@ -796,6 +841,12 @@ def prepare_session_rag_task_retry(
     task.error_type = None
     task.error_message = None
     task.retry_count += 1
+    set_session_turn_status_for_task(
+        db,
+        task_id=task_id,
+        status=TASK_STATUS_PENDING,
+        commit=False,
+    )
     outbox_event = _create_session_rag_outbox_event(
         task,
         document_id=document_id,
@@ -903,6 +954,12 @@ def prepare_work_order_analysis_task_retry(
     task.error_type = None
     task.error_message = None
     task.retry_count += 1
+    set_session_turn_status_for_task(
+        db,
+        task_id=task_id,
+        status=TASK_STATUS_PENDING,
+        commit=False,
+    )
     outbox_event = _create_work_order_analysis_outbox_event(task, business_id, delay_seconds)
 
     db.add(outbox_event)
@@ -1134,6 +1191,12 @@ def mark_timeout_tasks_error(
                     error_message=error_message,
                 )
             )
+        set_session_turn_status_for_task(
+            db,
+            task_id=task.task_id,
+            status=TASK_STATUS_ERROR,
+            commit=False,
+        )
     db.commit()
     for task in timeout_tasks:
         db.refresh(task)

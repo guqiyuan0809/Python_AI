@@ -29,7 +29,20 @@ from day04_app.services.tool_calling_service import (
     execute_registered_tool,
     list_available_tools,
 )
-from day04_app.security.principal import SecurityPrincipal
+from day04_app.services.langchain_agent_decision_chain import (
+    build_langchain_agent_decision_chain,
+)
+from day04_app.services.langchain_tool_adapter_service import (
+    LangChainToolCatalog,
+    build_langchain_tools,
+    invoke_governed_langchain_tool,
+)
+from day04_app.services.agent_memory_service import (
+    compact_agent_steps,
+    create_working_memory_snapshot,
+)
+from day04_app.security.principal import SYSTEM_PRINCIPAL, SecurityPrincipal
+from day04_app.services.tool_execution_context import ToolExecutionContext
 from settings import settings
 
 
@@ -224,7 +237,7 @@ def _make_tool_call_key(tool_name: str | None, arguments: dict[str, Any]) -> str
 def _build_agent_loop_messages(
     *,
     message: str,
-    steps: list[AgentLoopStepItem],
+    steps: list[Any],
     max_steps: int,
     prompt,
 ) -> list[dict[str, str]]:
@@ -234,7 +247,7 @@ def _build_agent_loop_messages(
         indent=2,
     )
     steps_text = json.dumps(
-        [step.model_dump() for step in steps],
+        [step.model_dump(mode="json") if hasattr(step, "model_dump") else step for step in steps],
         ensure_ascii=False,
         indent=2,
     )
@@ -373,7 +386,20 @@ def run_agent_loop(
     sample_id: str | None = None,
     decision_prompt=None,
     principal: SecurityPrincipal | None = None,
+    decision_engine: Literal["native", "langchain_runnable_v1"] = "native",
 ) -> AgentLoopResponse:
+    """运行项目受控 Agent Loop。
+
+    ``native`` 是当前线上基线；``langchain_runnable_v1`` 是独立候选实现：
+    LangChain 只接管 Prompt/Runnable 决策与 StructuredTool 契约，循环状态机、
+    确定性高风险路由、策略拦截、停止条件和审计仍由本服务控制。
+    """
+    if decision_engine not in {"native", "langchain_runnable_v1"}:
+        raise ValueError(f"不支持的 Agent 决策引擎：{decision_engine}")
+    if max_steps < 1 or max_steps > settings.agent_loop_max_steps_hard_limit:
+        raise ValueError(
+            f"Agent 最大循环步数必须在 1 到 {settings.agent_loop_max_steps_hard_limit} 之间"
+        )
     start_time = time.perf_counter()
     steps: list[AgentLoopStepItem] = []
     called_tool_keys: set[str] = set()
@@ -386,6 +412,12 @@ def run_agent_loop(
         if runtime_prompt is not None
         else None
     )
+    langchain_decision_chain = None
+    langchain_tool_catalog: LangChainToolCatalog | None = None
+    # ``steps`` 是完整审计事实；``prompt_steps`` 是受预算控制的模型视图。
+    # 摘要不会改变 max_steps，也不会删除原始步骤。
+    prompt_steps: list[Any] = []
+    last_compacted_step = 0
 
     try:
         for step_index in range(1, max_steps + 1):
@@ -401,30 +433,46 @@ def run_agent_loop(
                     # 同一 Loop 首次调用时固定 active Prompt，后续轮次不受并发发布影响。
                     runtime_prompt = get_active_agent_decision_prompt(db)
                 runtime_model = runtime_prompt.model or settings.dashscope_model
-                client = create_client(timeout=30.0)
                 decision_start_time = time.perf_counter()
+                decision_source = "model"
                 try:
-                    response = call_chat_completion(
-                        client,
-                        _build_agent_loop_messages(
-                            message=message,
-                            steps=steps,
-                            max_steps=max_steps,
-                            prompt=runtime_prompt,
-                        ),
-                        model=runtime_model,
-                        temperature=(
-                            runtime_prompt.temperature
-                            if runtime_prompt.temperature is not None
-                            else 0.0
-                        ),
-                        max_tokens=runtime_prompt.max_tokens or 500,
-                    )
-                    usage = response.usage
+                    if decision_engine == "langchain_runnable_v1":
+                        if langchain_decision_chain is None:
+                            # 同一轮 Loop 复用首次固定的 Prompt 快照构建 Runnable，发布不会影响后续轮次。
+                            langchain_decision_chain = build_langchain_agent_decision_chain(runtime_prompt)
+                        execution = langchain_decision_chain.invoke(
+                            {
+                                "message": message,
+                                "steps": prompt_steps,
+                                "max_steps": max_steps,
+                            }
+                        )
+                        usage = execution.usage
+                        decision_source = "langchain_runnable"
+                        decision = _parse_agent_loop_decision(execution.raw_decision_text)
+                    else:
+                        client = create_client(timeout=30.0)
+                        response = call_chat_completion(
+                            client,
+                            _build_agent_loop_messages(
+                                message=message,
+                                steps=prompt_steps,
+                                max_steps=max_steps,
+                                prompt=runtime_prompt,
+                            ),
+                            model=runtime_model,
+                            temperature=(
+                                runtime_prompt.temperature
+                                if runtime_prompt.temperature is not None
+                                else 0.0
+                            ),
+                            max_tokens=runtime_prompt.max_tokens or 500,
+                        )
+                        usage = response.usage
+                        decision = _parse_agent_loop_decision(response.choices[0].message.content or "")
                     prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
                     completion_tokens += getattr(usage, "completion_tokens", 0) or 0
                     total_tokens += getattr(usage, "total_tokens", 0) or 0
-                    decision = _parse_agent_loop_decision(response.choices[0].message.content or "")
                 except Exception as exc:
                     create_call_log(
                         db,
@@ -446,7 +494,8 @@ def run_agent_loop(
                         detail={
                             "step_index": step_index,
                             "sample_id": sample_id,
-                            "decision_source": "model",
+                            "decision_source": decision_source,
+                            "decision_engine": decision_engine,
                             "prompt_source": "database",
                             "decision_policy_version": AGENT_DECISION_POLICY_VERSION,
                             "tool_catalog_hash": _get_tool_catalog_hash(),
@@ -469,7 +518,8 @@ def run_agent_loop(
                     detail={
                         "step_index": step_index,
                         "sample_id": sample_id,
-                        "decision_source": "model",
+                        "decision_source": decision_source,
+                        "decision_engine": decision_engine,
                         "action": decision.action,
                         "tool_name": decision.tool_name,
                         "prompt_source": "database",
@@ -489,6 +539,7 @@ def run_agent_loop(
                         "step_index": step_index,
                         "sample_id": sample_id,
                         "decision_source": "deterministic_high_risk_route",
+                        "decision_engine": decision_engine,
                         "action": decision.action,
                         "tool_name": decision.tool_name,
                         "prompt_source": "none",
@@ -587,13 +638,38 @@ def run_agent_loop(
                 arguments=decision.arguments,
                 reason=decision.reason,
             )
+            raw_observation: dict[str, Any] | None = None
             try:
                 tool_start_time = time.perf_counter()
-                raw_observation = execute_registered_tool(
-                    db,
-                    tool_decision,
-                    principal=principal,
-                )
+                if decision_engine == "langchain_runnable_v1":
+                    if langchain_tool_catalog is None:
+                        # 在线请求传入真实 Principal；Harness / Worker 是系统受控内部任务，
+                        # 显式使用 SYSTEM_PRINCIPAL，而不是由 Tool 适配器暗中兜底。
+                        langchain_tool_catalog = build_langchain_tools(
+                            db,
+                            principal=principal or SYSTEM_PRINCIPAL,
+                            execution_context=ToolExecutionContext(
+                                trace_id=trace_id,
+                                task_id=task_id,
+                                run_id=run_id,
+                            ),
+                        )
+                    raw_observation = invoke_governed_langchain_tool(
+                        langchain_tool_catalog,
+                        tool_name=decision.tool_name or "",
+                        arguments=decision.arguments,
+                    )
+                else:
+                    raw_observation = execute_registered_tool(
+                        db,
+                        tool_decision,
+                        principal=principal,
+                        execution_context=ToolExecutionContext(
+                            trace_id=trace_id,
+                            task_id=task_id,
+                            run_id=run_id,
+                        ),
+                    )
                 observation = _normalize_tool_observation(
                     tool_name=decision.tool_name,
                     arguments=decision.arguments,
@@ -607,6 +683,13 @@ def run_agent_loop(
                     arguments=decision.arguments,
                     exc=exc,
                 )
+            # knowledge_search 等工具内部可能调用 LlamaIndex QueryEngine；它的回答模型
+            # usage 不能遗失在 Observation 中，否则手写/LCEL 候选 Agent 的根成本会偏低。
+            tool_usage = raw_observation.get("usage") if isinstance(raw_observation, dict) else None
+            if isinstance(tool_usage, dict):
+                prompt_tokens += int(tool_usage.get("prompt_tokens") or 0)
+                completion_tokens += int(tool_usage.get("completion_tokens") or 0)
+                total_tokens += int(tool_usage.get("total_tokens") or 0)
             create_call_log(
                 db,
                 call_type="agent_loop",
@@ -625,6 +708,7 @@ def run_agent_loop(
                     "argument_names": sorted(decision.arguments),
                     "observation_status": observation["status"],
                     "matched_rules": observation.get("matched_rules", []),
+                    "decision_engine": decision_engine,
                 },
             )
             steps.append(
@@ -638,6 +722,35 @@ def run_agent_loop(
                     final_answer=None,
                 )
             )
+            # 超过工作记忆预算时只压缩模型视图；完整 steps 仍返回给前端并继续写入日志。
+            compaction = compact_agent_steps(steps)
+            if (
+                compaction.should_compact
+                and compaction.covered_step_to is not None
+                and compaction.covered_step_to > last_compacted_step
+            ):
+                snapshot_run_id = run_id or trace_id
+                if snapshot_run_id:
+                    create_working_memory_snapshot(
+                        db,
+                        run_id=snapshot_run_id,
+                        session_id=None,
+                        trace_id=trace_id,
+                        compaction=compaction,
+                    )
+                # 给下一轮模型的是结构化事实摘要 + 最近原始步骤，不是无限增长的全量 JSON。
+                prompt_steps = [
+                    {
+                        "step_index": compaction.covered_step_to,
+                        "action": "working_memory_summary",
+                        "observation": compaction.summary,
+                    },
+                    *compaction.recent_steps,
+                ]
+                last_compacted_step = compaction.covered_step_to
+            else:
+                # 未达到压缩阈值时，模型仍需看到本轮全部已完成步骤。
+                prompt_steps = [step.model_dump(mode="json") for step in steps]
             if _is_terminal_observation(observation):
                 # 终止态 observation 由后端直接确定性收口，避免多调用一轮模型造成成本浪费或误回答。
                 cost_ms = round((time.perf_counter() - start_time) * 1000)
@@ -718,3 +831,11 @@ def run_agent_loop(
             error_message=f"Agent Loop 执行失败：{type(exc).__name__}",
         )
         raise ModelCallException(message=f"Agent Loop 执行失败：{type(exc).__name__}") from exc
+
+
+def run_langchain_agent_loop(
+    db: Session,
+    **kwargs: Any,
+) -> AgentLoopResponse:
+    """LangChain 候选入口；保留 run_agent_loop 的默认 native 基线不变。"""
+    return run_agent_loop(db, decision_engine="langchain_runnable_v1", **kwargs)

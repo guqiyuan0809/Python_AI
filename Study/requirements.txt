@@ -12,3 +12,10 @@ python-docx>=1.2,<2
 pypdf>=5.0,<7
 openpyxl>=3.1,<4
 pymilvus>=2.4,<4
+# Day31：只引入 LlamaIndex 的核心抽象。Milvus、Embedding 和文档版本仍由项目自己的治理层负责。
+llama-index-core>=0.14,<0.15
+# Day31：LangChain 核心抽象（Runnable、PromptTemplate、StructuredTool）。
+# 先只接入 core，不启用框架自带黑盒 Agent，保留项目自己的安全循环与治理边界。
+langchain-core>=0.3,<0.4
+# Day32：用显式 StateGraph 编排规划、决策、工具、观察和条件循环；不使用黑盒 AgentExecutor。
+langgraph>=0.3,<0.4
